@@ -1,0 +1,53 @@
+<!-- backend/templates/emails/welcome.html -->
+{% extends "emails/base.html" %}
+
+{% block title %}Welcome to Nidus ERP{% endblock %}
+
+{% block content %}
+  <p style="margin: 0 0 16px 0; font-size: 16px; color: #2c3e50; line-height: 1.6;">
+    Assalamu Alaikum <strong>{{ full_name }}</strong>,
+  </p>
+
+  <p style="margin: 0 0 20px 0; font-size: 15px; color: #515a63; line-height: 1.6;">
+    Your email has been verified successfully. Your Nidus ERP account is now fully active!
+  </p>
+
+  <!-- Success badge -->
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr>
+      <td align="center" style="padding: 16px 0;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td style="background-color: #eafaf1; border-radius: 50px; padding: 12px 32px; text-align: center;">
+              <p style="margin: 0; font-size: 15px; color: #1e8449; font-weight: 600;">
+                ✓ Account Verified
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  {% if companies_joined %}
+  <!-- Companies auto-joined -->
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr>
+      <td style="background-color: #f0f7fc; border-radius: 8px; padding: 16px 20px;">
+        <p style="margin: 0 0 8px 0; font-size: 14px; color: #1a5276; font-weight: 600;">
+          You've been added to the following companies:
+        </p>
+        {% for company_name in companies_joined %}
+        <p style="margin: 4px 0; font-size: 14px; color: #2e86c1;">
+          • {{ company_name }}
+        </p>
+        {% endfor %}
+      </td>
+    </tr>
+  </table>
+  {% endif %}
+
+  <p style="margin: 24px 0 0 0; font-size: 15px; color: #515a63; line-height: 1.6;">
+    You can now log in and start managing your business.
+  </p>
+{% endblock %}

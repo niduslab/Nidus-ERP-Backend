@@ -1,0 +1,39 @@
+<!-- backend/templates/emails/role_changed.html -->
+{% extends "emails/base.html" %}
+
+{% block title %}Role Updated in {{ company_name }} — Nidus ERP{% endblock %}
+
+{% block content %}
+  <p style="margin: 0 0 16px 0; font-size: 16px; color: #2c3e50; line-height: 1.6;">
+    Assalamu Alaikum <strong>{{ full_name }}</strong>,
+  </p>
+
+  <p style="margin: 0 0 24px 0; font-size: 15px; color: #515a63; line-height: 1.6;">
+    Your role in <strong>{{ company_name }}</strong> has been updated.
+  </p>
+
+  <!-- Role change visual -->
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr>
+      <td align="center" style="padding: 8px 0 24px 0;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td style="background-color: #f8f9fa; border-radius: 8px; padding: 12px 20px; text-align: center;">
+              <span style="font-size: 14px; color: #7f8c8d;">{{ old_role }}</span>
+            </td>
+            <td style="padding: 0 16px;">
+              <span style="font-size: 20px; color: #2e86c1;">→</span>
+            </td>
+            <td style="background-color: #eaf2f8; border: 2px solid #2e86c1; border-radius: 8px; padding: 12px 20px; text-align: center;">
+              <span style="font-size: 14px; color: #1a5276; font-weight: 700;">{{ new_role }}</span>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <p style="margin: 0; font-size: 14px; color: #7f8c8d; line-height: 1.6;">
+    Your access permissions may have changed accordingly. If you have any questions, please contact the company owner or administrator.
+  </p>
+{% endblock %}

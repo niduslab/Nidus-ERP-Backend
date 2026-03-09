@@ -1,0 +1,52 @@
+<!-- backend/templates/emails/ownership_transferred.html -->
+{% extends "emails/base.html" %}
+
+{% block title %}Ownership Transferred — {{ company_name }} — Nidus ERP{% endblock %}
+
+{% block content %}
+  <p style="margin: 0 0 16px 0; font-size: 16px; color: #2c3e50; line-height: 1.6;">
+    Assalamu Alaikum <strong>{{ full_name }}</strong>,
+  </p>
+
+  <p style="margin: 0 0 24px 0; font-size: 15px; color: #515a63; line-height: 1.6;">
+    You have successfully transferred ownership of <strong>{{ company_name }}</strong> to <strong>{{ new_owner_name }}</strong>.
+  </p>
+
+  <!-- Transfer summary card -->
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f8f9fa; border-radius: 8px; overflow: hidden;">
+    <tr>
+      <td style="padding: 20px 24px;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td style="padding: 6px 0; font-size: 13px; color: #7f8c8d; width: 130px; vertical-align: top;">Company</td>
+            <td style="padding: 6px 0; font-size: 15px; color: #2c3e50; font-weight: 600;">{{ company_name }}</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 0; font-size: 13px; color: #7f8c8d; vertical-align: top;">New Owner</td>
+            <td style="padding: 6px 0; font-size: 15px; color: #2e86c1; font-weight: 600;">{{ new_owner_name }}</td>
+          </tr>
+          <tr>
+            <td style="padding: 6px 0; font-size: 13px; color: #7f8c8d; vertical-align: top;">Your Status</td>
+            <td style="padding: 6px 0; font-size: 15px; color: #2c3e50; font-weight: 600;">{{ your_status }}</td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  {% if left_company %}
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top: 20px;">
+    <tr>
+      <td style="background-color: #fef9e7; border-left: 4px solid #f39c12; border-radius: 4px; padding: 12px 16px;">
+        <p style="margin: 0; font-size: 13px; color: #7d6608; line-height: 1.5;">
+          You have left <strong>{{ company_name }}</strong>. You will no longer have access to this company's data.
+        </p>
+      </td>
+    </tr>
+  </table>
+  {% endif %}
+
+  <p style="margin: 24px 0 0 0; font-size: 14px; color: #7f8c8d; line-height: 1.6;">
+    If you did not initiate this transfer, please contact support immediately.
+  </p>
+{% endblock %}

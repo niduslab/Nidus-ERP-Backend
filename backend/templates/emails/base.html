@@ -1,0 +1,73 @@
+<!-- backend/templates/emails/base.html -->
+<!--
+  Base email template for Nidus ERP.
+  All email templates extend this to get consistent branding.
+
+  WHY TABLES INSTEAD OF DIV?
+  Email clients (Outlook, Gmail, Yahoo) have terrible CSS support.
+  Tables are the only reliable way to create layouts in emails.
+  Inline CSS is required because many clients strip <style> tags.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Nidus ERP{% endblock %}</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f4f6f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; -webkit-font-smoothing: antialiased;">
+
+  <!-- Outer wrapper — sets the gray background -->
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f4f6f9;">
+    <tr>
+      <td align="center" style="padding: 40px 16px;">
+
+        <!-- Main card — white box with rounded corners -->
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width: 580px; background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);">
+
+          <!-- ── HEADER ── -->
+          <tr>
+            <td style="background: linear-gradient(135deg, #1a5276 0%, #2e86c1 100%); padding: 32px 40px; text-align: center;">
+              <h1 style="margin: 0; font-size: 28px; font-weight: 700; color: #ffffff; letter-spacing: 1px;">
+                NIDUS<span style="color: #85c1e9; font-weight: 300;">ERP</span>
+              </h1>
+              <p style="margin: 6px 0 0 0; font-size: 13px; color: #aed6f1; letter-spacing: 0.5px;">
+                Smart Business Management
+              </p>
+            </td>
+          </tr>
+
+          <!-- ── BODY CONTENT ── -->
+          <tr>
+            <td style="padding: 36px 40px 20px 40px;">
+              {% block content %}{% endblock %}
+            </td>
+          </tr>
+
+          <!-- ── FOOTER ── -->
+          <tr>
+            <td style="padding: 20px 40px 32px 40px; border-top: 1px solid #eaecf0;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td style="text-align: center;">
+                    <p style="margin: 0 0 8px 0; font-size: 13px; color: #7f8c8d; line-height: 1.6;">
+                      This email was sent by {{ app_name }}.<br>
+                      If you didn't expect this email, you can safely ignore it.
+                    </p>
+                    <p style="margin: 0; font-size: 12px; color: #b0b8c1;">
+                      &copy; {{ current_year }} Nidus ERP. All rights reserved.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+        </table>
+
+      </td>
+    </tr>
+  </table>
+
+</body>
+</html>

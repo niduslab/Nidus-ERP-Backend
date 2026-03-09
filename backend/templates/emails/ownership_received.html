@@ -1,0 +1,44 @@
+<!-- backend/templates/emails/ownership_received.html -->
+{% extends "emails/base.html" %}
+
+{% block title %}Ownership Transfer — {{ company_name }} — Nidus ERP{% endblock %}
+
+{% block content %}
+  <p style="margin: 0 0 16px 0; font-size: 16px; color: #2c3e50; line-height: 1.6;">
+    Assalamu Alaikum <strong>{{ full_name }}</strong>,
+  </p>
+
+  <p style="margin: 0 0 24px 0; font-size: 15px; color: #515a63; line-height: 1.6;">
+    Ownership of <strong>{{ company_name }}</strong> on Nidus ERP has been transferred to you by <strong>{{ previous_owner_name }}</strong>.
+  </p>
+
+  <!-- New Owner badge -->
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr>
+      <td align="center" style="padding: 8px 0 24px 0;">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+          <tr>
+            <td style="background: linear-gradient(135deg, #1a5276 0%, #2e86c1 100%); border-radius: 10px; padding: 16px 36px; text-align: center;">
+              <p style="margin: 0 0 4px 0; font-size: 12px; color: #aed6f1; text-transform: uppercase; letter-spacing: 1px;">
+                Your New Role
+              </p>
+              <p style="margin: 0; font-size: 22px; font-weight: 700; color: #ffffff;">
+                Owner
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+    <tr>
+      <td style="background-color: #fef9e7; border-left: 4px solid #f39c12; border-radius: 4px; padding: 12px 16px;">
+        <p style="margin: 0; font-size: 13px; color: #7d6608; line-height: 1.5;">
+          <strong>As the Owner, you now have full control</strong> over this company — including managing members, updating settings, and deleting the company. Please ensure your account is secure with a strong password.
+        </p>
+      </td>
+    </tr>
+  </table>
+{% endblock %}
