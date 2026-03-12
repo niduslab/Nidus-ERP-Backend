@@ -92,6 +92,15 @@ def generate_default_coa(company, created_by):
                 system_code=system_code,
                 account=account,
             )
+        from companies.models import DocumentSequence
+
+        DocumentSequence.objects.create(
+            company=company,
+            module='MANUAL_JOURNAL',
+            prefix='JE-',
+            next_number=1,
+            padding=4,
+        )
 
 
 def generate_custom_coa(company, created_by, validated_data):
@@ -213,3 +222,14 @@ def generate_custom_coa(company, created_by, validated_data):
                 system_code=system_code,
                 account=account,
             )
+
+        
+        from companies.models import DocumentSequence
+
+        DocumentSequence.objects.create(
+            company=company,
+            module='MANUAL_JOURNAL',
+            prefix='JE-',
+            next_number=1,
+            padding=4,
+        )

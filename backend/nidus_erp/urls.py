@@ -8,4 +8,5 @@ urlpatterns = [
     path('api/auth/', include('authentication.urls')),
     path('api/companies/', include('companies.urls')),
     path('api/companies/<uuid:company_id>/', include('chartofaccounts.urls')),
+    path('api/companies/<uuid:company_id>/', include('journals.urls')),
 ]

@@ -40,7 +40,8 @@ INSTALLED_APPS = [
     
     'authentication',
     'companies',
-    'chartofaccounts'
+    'chartofaccounts',
+    'journals',
 ]
 
 MIDDLEWARE = [
@@ -143,16 +144,13 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 AUTH_USER_MODEL = 'authentication.User'
 
 REST_FRAMEWORK = {
-    # Default authentication: JWT tokens
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ],
-    # Default permission: only authenticated users can access API
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
-    # Pagination: return 20 items per page by default
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'DEFAULT_PAGINATION_CLASS': 'nidus_erp.pagination.StandardResultsSetPagination',
     'PAGE_SIZE': 20,
 }
 

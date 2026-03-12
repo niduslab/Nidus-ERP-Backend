@@ -3,8 +3,8 @@
 from rest_framework import serializers
 from django.db import transaction
 from django.contrib.auth import get_user_model
-from .models import Company, CompanyUser, PendingInvitation, RoleChoices
-
+from .models import Company, CompanyUser, PendingInvitation, RoleChoices, TaxProfile,TaxProfileLayer,DocumentSequence,CurrencyExchangeRate,TaxCalculationTypeChoices
+ 
 User = get_user_model()
 
 
@@ -355,3 +355,249 @@ class TransferOwnershipSerializer(serializers.Serializer):
 
     def validate_new_owner_email(self, value):
         return value.lower().strip()
+    
+
+class TaxProfileLayerSerializer(serializers.ModelSerializer):
+    """Display a single tax layer within a profile."""
+    default_tax_account_name = serializers.CharField(
+        source='default_tax_account.name',
+        read_only=True,
+    )
+    default_tax_account_code = serializers.CharField(
+        source='default_tax_account.code',
+        read_only=True,
+    )
+
+    class Meta:
+        model = TaxProfileLayer
+        fields = [
+            'id',
+            'name',
+            'rate',
+            'calculation_type',
+            'apply_order',
+            'default_tax_account',
+            'default_tax_account_name',
+            'default_tax_account_code',
+        ]
+        read_only_fields = ['id']
+
+
+class TaxProfileListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for listing tax profiles."""
+    layer_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TaxProfile
+        fields = [
+            'id',
+            'name',
+            'combined_rate',
+            'is_active',
+            'layer_count',
+        ]
+
+    def get_layer_count(self, obj):
+        return obj.layers.count()
+
+
+class TaxProfileDetailSerializer(serializers.ModelSerializer):
+    """Full tax profile with nested layers."""
+    layers = TaxProfileLayerSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = TaxProfile
+        fields = [
+            'id',
+            'name',
+            'combined_rate',
+            'is_active',
+            'layers',
+            'created_at',
+            'updated_at',
+        ]
+
+
+class CreateTaxProfileLayerSerializer(serializers.Serializer):
+    """Input serializer for a single layer during profile creation."""
+    name = serializers.CharField(max_length=100)
+    rate = serializers.DecimalField(max_digits=7, decimal_places=4)
+    calculation_type = serializers.ChoiceField(
+        choices=TaxCalculationTypeChoices.choices,
+        default=TaxCalculationTypeChoices.INDEPENDENT,
+    )
+    apply_order = serializers.IntegerField(min_value=1)
+    default_tax_account_id = serializers.UUIDField()
+
+
+class CreateTaxProfileSerializer(serializers.Serializer):
+    """
+    Create a tax profile with nested layers in one request.
+
+    Example payload:
+    {
+        "name": "SD 5% + VAT 15%",
+        "layers": [
+            {
+                "name": "Supplementary Duty",
+                "rate": "5.0000",
+                "calculation_type": "INDEPENDENT",
+                "apply_order": 1,
+                "default_tax_account_id": "<uuid>"
+            },
+            {
+                "name": "VAT",
+                "rate": "15.0000",
+                "calculation_type": "COMPOUND",
+                "apply_order": 2,
+                "default_tax_account_id": "<uuid>"
+            }
+        ]
+    }
+
+    The combined_rate is auto-calculated from the layers using the
+    same tax calculation engine that journal posting uses.
+    """
+    name = serializers.CharField(max_length=100)
+    layers = CreateTaxProfileLayerSerializer(many=True)
+
+    def validate_name(self, value):
+        company = self.context['company']
+        if TaxProfile.objects.filter(company=company, name=value).exists():
+            raise serializers.ValidationError(
+                f'A tax profile named "{value}" already exists in this company.'
+            )
+        return value
+
+    def validate_layers(self, value):
+        if len(value) < 1:
+            raise serializers.ValidationError(
+                'A tax profile must have at least one layer.'
+            )
+
+        # Check apply_order uniqueness
+        orders = [layer['apply_order'] for layer in value]
+        if len(orders) != len(set(orders)):
+            raise serializers.ValidationError(
+                'Each layer must have a unique apply_order.'
+            )
+
+        # Validate all tax account IDs exist and belong to this company
+        from chartofaccounts.models import Account
+        company = self.context['company']
+
+        for i, layer in enumerate(value, start=1):
+            try:
+                account = Account.objects.get(
+                    id=layer['default_tax_account_id'],
+                    company=company,
+                )
+                if not account.is_active:
+                    raise serializers.ValidationError(
+                        f'Layer {i}: Tax account "{account.name}" is inactive.'
+                    )
+                # Store the resolved account for use in create()
+                layer['_account'] = account
+            except Account.DoesNotExist:
+                raise serializers.ValidationError(
+                    f'Layer {i}: Tax account not found in this company.'
+                )
+
+        return value
+
+
+# ══════════════════════════════════════════════════
+# DOCUMENT SEQUENCE SERIALIZERS
+# ══════════════════════════════════════════════════
+
+class DocumentSequenceSerializer(serializers.ModelSerializer):
+    """Display and update document sequences."""
+    current_format = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DocumentSequence
+        fields = [
+            'id',
+            'module',
+            'prefix',
+            'next_number',
+            'padding',
+            'current_format',
+        ]
+        read_only_fields = ['id', 'module', 'next_number', 'current_format']
+
+    def get_current_format(self, obj):
+        """Show what the next number will look like."""
+        return f"{obj.prefix}{str(obj.next_number).zfill(obj.padding)}"
+
+
+class UpdateDocumentSequenceSerializer(serializers.Serializer):
+    """Update prefix and/or padding of a document sequence."""
+    prefix = serializers.CharField(max_length=10, required=False)
+    padding = serializers.IntegerField(min_value=1, max_value=10, required=False)
+
+
+# ══════════════════════════════════════════════════
+# CURRENCY EXCHANGE RATE SERIALIZERS
+# ══════════════════════════════════════════════════
+
+class CurrencyExchangeRateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CurrencyExchangeRate
+        fields = [
+            'id',
+            'currency_code',
+            'rate_to_base',
+            'effective_date',
+            'source',
+            'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+class CreateCurrencyExchangeRateSerializer(serializers.Serializer):
+    """
+    Create or update an exchange rate.
+
+    If a rate already exists for this company + currency + date,
+    it gets updated. Otherwise, a new record is created.
+    """
+    currency_code = serializers.CharField(max_length=3)
+    rate_to_base = serializers.DecimalField(max_digits=18, decimal_places=6)
+    effective_date = serializers.DateField()
+    source = serializers.CharField(max_length=30, default='MANUAL')
+
+    def validate_currency_code(self, value):
+        value = value.upper().strip()
+        if len(value) != 3:
+            raise serializers.ValidationError(
+                'Currency code must be exactly 3 characters (ISO 4217).'
+            )
+        company = self.context['company']
+        if value == company.base_currency:
+            raise serializers.ValidationError(
+                f'Cannot set exchange rate for the base currency ({value}). '
+                f'The base currency always has a rate of 1.0.'
+            )
+        return value
+
+    def validate_rate_to_base(self, value):
+        if value <= 0:
+            raise serializers.ValidationError(
+                'Exchange rate must be greater than zero.'
+            )
+        return value
+
+
+# ══════════════════════════════════════════════════
+# LOCK DATE SERIALIZER
+# ══════════════════════════════════════════════════
+
+class LockDateSerializer(serializers.Serializer):
+    """Set or clear the company lock date."""
+    lock_date = serializers.DateField(
+        required=False,
+        allow_null=True,
+        help_text='Set to a date to freeze transactions before it. '
+                  'Set to null to remove the lock.',
+    )

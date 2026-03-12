@@ -2,6 +2,8 @@
 
 from django.contrib import admin
 from .models import Company, CompanyUser, PendingInvitation
+from .models import TaxProfile, TaxProfileLayer, DocumentSequence, CurrencyExchangeRate
+
 
 
 class CompanyUserInline(admin.TabularInline):
@@ -49,7 +51,7 @@ class CompanyAdmin(admin.ModelAdmin):
             'fields': ('id', 'owner', 'name', 'trade_name', 'industry', 'tax_id'),
         }),
         ('Financial Settings', {
-            'fields': ('base_currency', 'fiscal_year_start_month', 'inventory_valuation_method', 'date_format', 'is_vds_withholding_entity'),
+            'fields': ('base_currency', 'fiscal_year_start_month', 'inventory_valuation_method',"reporting_method","lock_date", 'date_format', 'is_vds_withholding_entity'),
         }),
         ('Contact & Address', {
             'fields': ('address', 'city', 'postal_code', 'country', 'phone', 'website'),
@@ -112,3 +114,31 @@ class PendingInvitationAdmin(admin.ModelAdmin):
     ordering = ('-created_at',)
 
     readonly_fields = ('id', 'created_at')
+
+
+class TaxProfileLayerInline(admin.TabularInline):
+    model = TaxProfileLayer
+    extra = 0
+    fields = ('name', 'rate', 'calculation_type', 'apply_order', 'default_tax_account')
+ 
+
+
+@admin.register(TaxProfile)
+class TaxProfileAdmin(admin.ModelAdmin):
+    list_display = ('name', 'company', 'combined_rate', 'is_active')
+    list_filter = ('company', 'is_active')
+    search_fields = ('name',)
+    inlines = [TaxProfileLayerInline]
+
+
+@admin.register(DocumentSequence)
+class DocumentSequenceAdmin(admin.ModelAdmin):
+    list_display = ('company', 'module', 'prefix', 'next_number', 'padding')
+    list_filter = ('module', 'company')
+
+
+@admin.register(CurrencyExchangeRate)
+class CurrencyExchangeRateAdmin(admin.ModelAdmin):
+    list_display = ('company', 'currency_code', 'rate_to_base', 'effective_date', 'source')
+    list_filter = ('company', 'currency_code', 'source')
+    ordering = ('-effective_date',)

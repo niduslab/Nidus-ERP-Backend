@@ -114,7 +114,7 @@ class Account(models.Model):
 
     classification = models.ForeignKey(
         AccountClassification,
-        on_delete=models.PROTECT,
+        on_delete=models.CASCADE,
         related_name='accounts',
         verbose_name='classification (Layer 3)',
         help_text='The Layer 3 classification group this account belongs to.',
@@ -122,7 +122,7 @@ class Account(models.Model):
 
     parent_account = models.ForeignKey(
         'self',
-        on_delete=models.PROTECT,
+        on_delete=models.CASCADE,
         null=True,
         blank=True,
         related_name='sub_accounts',
@@ -285,7 +285,7 @@ class SystemAccountMapping(models.Model):
 
     account = models.ForeignKey(
         Account,
-        on_delete=models.PROTECT,
+        on_delete=models.CASCADE,
         related_name='system_mappings',
         verbose_name='mapped account',
     )

@@ -209,6 +209,21 @@ class RoleChoices(models.TextChoices):
     INVENTORY = 'INVENTORY', 'Inventory'
 
 
+class TaxCalculationTypeChoices(models.TextChoices):
+    """
+    How a tax layer calculates its amount.
+
+    INDEPENDENT: Calculates on the original pre-tax amount.
+    COMPOUND:    Calculates on (original amount + all previous layers).
+
+    Example with 5% SD (independent) + 15% VAT (compound) on 10,000:
+        SD  = 10,000 × 5%          = 500
+        VAT = (10,000 + 500) × 15% = 1,575
+        Total tax: 2,075 (effective rate: 20.75%)
+    """
+    INDEPENDENT = 'INDEPENDENT', 'Independent (on original amount)'
+    COMPOUND    = 'COMPOUND', 'Compound (on amount + previous layers)'
+
 
 class Company(models.Model):
 
@@ -290,6 +305,25 @@ class Company(models.Model):
         default=False,
         verbose_name='VDS/withholding entity',
         help_text='Whether this company deducts VAT at source.',
+    )
+
+    lock_date = models.DateField(
+        null=True,
+        blank=True,
+        verbose_name='lock date',
+        help_text='Transactions before this date are frozen. Only Owner/Admin can change.',
+    )
+
+    reporting_method = models.CharField(
+        max_length=10,
+        choices=[
+            ('ACCRUAL', 'Accrual'),
+            ('CASH', 'Cash'),
+            ('BOTH', 'Both'),
+        ],
+        default='ACCRUAL',
+        verbose_name='reporting method',
+        help_text='Affects how financial reports calculate revenue/expense recognition.',
     )
 
     address = models.TextField(
@@ -374,20 +408,16 @@ class Company(models.Model):
 
     def has_financial_records(self):
         """
-        Check if this company has any journal entries recorded.
+        Check if this company has any ledger entries recorded.
         Used to determine if base_currency can still be changed.
-        
-        Returns False for now since JournalEntry model doesn't exist yet.
-        When we build the journals app in Step 4, we'll update this method
-        to actually query the JournalEntry table.
         """
-        # TODO: Update when JournalEntry model is created in Step 4
-        # return self.journal_entries.exists()
-        return False
+        # Import here to avoid circular import at module level
+        from journals.models import LedgerEntry
+        return LedgerEntry.objects.filter(company=self).exists()
 
 
 
-class CompanyUser(models.Model):
+class   CompanyUser(models.Model):
 
     id = models.UUIDField(
         primary_key=True,
@@ -521,3 +551,314 @@ class PendingInvitation(models.Model):
 
     def __str__(self):
         return f"{self.email} → {self.company.name} ({self.role})"
+    
+class TaxProfile(models.Model):
+    """
+    A reusable tax configuration that can be applied to journal lines,
+    invoice lines, bill lines, and any future transactional module.
+
+    Examples:
+        "VAT 15%"                     → Single layer, 15% independent
+        "VAT 7.5%"                    → Single layer, 7.5% independent  
+        "SD 5% + VAT 15% (Compound)"  → Two layers, SD independent + VAT compound
+
+    When applied to a line, the system calculates the tax amount per layer
+    and creates additional LedgerEntries for each tax account.
+
+    The combined_rate field is pre-calculated for display purposes
+    (showing "20.75%" in dropdowns). The actual calculation always
+    uses the individual layer rates.
+    """
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    company = models.ForeignKey(
+        'companies.Company',
+        on_delete=models.CASCADE,
+        related_name='tax_profiles',
+    )
+
+    name = models.CharField(
+        max_length=100,
+        verbose_name='tax profile name',
+        help_text='e.g., "VAT 15%", "SD 5% + VAT 15%"',
+    )
+
+    combined_rate = models.DecimalField(
+        max_digits=7,
+        decimal_places=4,
+        verbose_name='combined tax rate (%)',
+        help_text='Total effective rate. Pre-calculated for display.',
+    )
+
+
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name='active',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'tax profile'
+        verbose_name_plural = 'tax profiles'
+        ordering = ['name']
+
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'name'],
+                name='unique_tax_profile_name_per_company',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.combined_rate}%)"
+
+
+# ──────────────────────────────────────────────
+# TAX PROFILE LAYER
+# ──────────────────────────────────────────────
+
+class TaxProfileLayer(models.Model):
+    """
+    A single tax layer within a TaxProfile.
+
+    Each layer has its own rate, calculation type, and target ledger account.
+    Layers are applied in order (apply_order = 1, 2, 3...).
+
+    The default_tax_account is the ledger account where the calculated
+    tax amount is posted. For example:
+        - VAT layer → posts to "Output VAT Payable" (system account OUTPUT_VAT)
+        - SD layer  → posts to "Supplementary Duty Payable"
+    """
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    tax_profile = models.ForeignKey(
+        TaxProfile,
+        on_delete=models.CASCADE,
+        related_name='layers',
+    )
+
+    name = models.CharField(
+        max_length=100,
+        verbose_name='layer name',
+        help_text='e.g., "VAT", "Supplementary Duty"',
+    )
+
+    rate = models.DecimalField(
+        max_digits=7,
+        decimal_places=4,
+        verbose_name='rate (%)',
+        help_text='Tax percentage for this layer.',
+    )
+
+    calculation_type = models.CharField(
+        max_length=15,
+        choices=TaxCalculationTypeChoices.choices,
+        default=TaxCalculationTypeChoices.INDEPENDENT,
+        verbose_name='calculation type',
+    )
+
+    apply_order = models.PositiveIntegerField(
+        verbose_name='application order',
+        help_text='Execution order within the profile (1 = first).',
+    )
+
+    default_tax_account = models.ForeignKey(
+        'chartofaccounts.Account',
+        on_delete=models.PROTECT,
+        related_name='tax_layer_defaults',
+        verbose_name='default tax account',
+        help_text='Ledger account where this tax layer posts.',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'tax profile layer'
+        verbose_name_plural = 'tax profile layers'
+        ordering = ['tax_profile', 'apply_order']
+
+        constraints = [
+            models.UniqueConstraint(
+                fields=['tax_profile', 'apply_order'],
+                name='unique_layer_order_per_profile',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.tax_profile.name} → {self.name} ({self.rate}%)"
+
+
+# ──────────────────────────────────────────────
+# DOCUMENT SEQUENCE
+# ──────────────────────────────────────────────
+
+class DocumentSequence(models.Model):
+    """
+    Generates sequential document numbers for all modules.
+
+    Each company + module combination gets its own counter.
+    For example:
+        Rahim Trading + MANUAL_JOURNAL → JE-0001, JE-0002, ...
+        Rahim Trading + SALES_INVOICE  → INV-0001, INV-0002, ...
+        Karim Industries + MANUAL_JOURNAL → JE-0001, JE-0002, ...
+
+    CRITICAL — ATOMIC INCREMENT:
+        The next_number field must be incremented using Django's F()
+        expression or select_for_update() to prevent race conditions
+        where two concurrent requests get the same number.
+
+    Usage:
+        from django.db.models import F
+
+        seq = DocumentSequence.objects.select_for_update().get(
+            company=company, module='MANUAL_JOURNAL'
+        )
+        number = seq.next_number
+        seq.next_number = F('next_number') + 1
+        seq.save(update_fields=['next_number'])
+        entry_number = f"{seq.prefix}{str(number).zfill(seq.padding)}"
+        # Result: "JE-0001"
+    """
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    company = models.ForeignKey(
+        'companies.Company',
+        on_delete=models.CASCADE,
+        related_name='document_sequences',
+    )
+
+    module = models.CharField(
+        max_length=30,
+        verbose_name='module name',
+        help_text='e.g., MANUAL_JOURNAL, SALES_INVOICE, PURCHASE_BILL',
+    )
+
+    prefix = models.CharField(
+        max_length=10,
+        verbose_name='prefix',
+        help_text='e.g., "JE-", "INV-", "BILL-"',
+    )
+
+    next_number = models.PositiveIntegerField(
+        default=1,
+        verbose_name='next number',
+    )
+
+    padding = models.PositiveIntegerField(
+        default=4,
+        verbose_name='zero padding',
+        help_text='Number of digits. 4 → "0001", 5 → "00001".',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'document sequence'
+        verbose_name_plural = 'document sequences'
+
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'module'],
+                name='unique_sequence_per_company_module',
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.company.name} → {self.module} "
+            f"({self.prefix}{str(self.next_number).zfill(self.padding)})"
+        )
+
+
+# ──────────────────────────────────────────────
+# CURRENCY EXCHANGE RATE
+# ──────────────────────────────────────────────
+
+class CurrencyExchangeRate(models.Model):
+    """
+    Stores exchange rates for multi-currency transactions.
+
+    Each record says: "On this date, 1 unit of this currency = X units
+    of the company's base currency."
+
+    Example for a BDT-based company:
+        currency_code: "USD", rate_to_base: 120.00, effective_date: 2026-03-01
+        Means: 1 USD = 120 BDT on March 1, 2026
+
+    When creating a transaction, the system looks up the rate for the
+    transaction date. If no rate exists for that exact date, it uses the
+    most recent rate on or before that date.
+
+    Rates can be entered manually or fetched from an external API.
+    The source field tracks where the rate came from.
+    """
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    company = models.ForeignKey(
+        'companies.Company',
+        on_delete=models.CASCADE,
+        related_name='exchange_rates',
+    )
+
+    currency_code = models.CharField(
+        max_length=3,
+        verbose_name='currency code',
+        help_text='ISO 4217 code (e.g., USD, EUR, GBP).',
+    )
+
+    rate_to_base = models.DecimalField(
+        max_digits=18,
+        decimal_places=6,
+        verbose_name='rate to base currency',
+        help_text='1 unit of this currency = X units of base currency.',
+    )
+
+    effective_date = models.DateField(
+        verbose_name='effective date',
+    )
+
+    source = models.CharField(
+        max_length=30,
+        default='MANUAL',
+        verbose_name='source',
+        help_text='MANUAL or API provider name.',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        verbose_name = 'currency exchange rate'
+        verbose_name_plural = 'currency exchange rates'
+        ordering = ['-effective_date']
+
+        constraints = [
+            models.UniqueConstraint(
+                fields=['company', 'currency_code', 'effective_date'],
+                name='unique_rate_per_currency_per_date',
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.currency_code} = {self.rate_to_base} "
+            f"{self.company.base_currency} ({self.effective_date})"
+        )
