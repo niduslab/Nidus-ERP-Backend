@@ -84,9 +84,14 @@ class JournalListCreateView(APIView):
 
     def get(self, request, company_id):
         company, membership = get_company_and_membership(request, company_id)
-        if not membership or membership.role not in JOURNAL_VIEW_ROLES:
+        if not membership:
             return Response(
-                {'success': False, 'message': 'You do not have access to view journal entries.'},
+                {'success': False, 'message': 'You do not have access to this company.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if membership.role not in JOURNAL_VIEW_ROLES:
+            return Response(
+                {'success': False, 'message': 'Your role does not have permission to view journal entries.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -138,7 +143,12 @@ class JournalListCreateView(APIView):
 
     def post(self, request, company_id):
         company, membership = get_company_and_membership(request, company_id)
-        if not membership or membership.role not in JOURNAL_WRITE_ROLES:
+        if not membership:
+            return Response(
+                {'success': False, 'message': 'You do not have access to this company.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if membership.role not in JOURNAL_WRITE_ROLES:
             return Response(
                 {'success': False, 'message': 'Only Owner, Admin, or Accountant can create journal entries.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -208,11 +218,16 @@ class JournalDetailView(APIView):
     DELETE → Delete a draft journal
     """
 
-    def get(self, request, company_id, entry_id):
+    def get(self, request, company_id):
         company, membership = get_company_and_membership(request, company_id)
-        if not membership or membership.role not in JOURNAL_VIEW_ROLES:
+        if not membership:
             return Response(
-                {'success': False, 'message': 'You do not have access to view journal entries.'},
+                {'success': False, 'message': 'You do not have access to this company.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if membership.role not in JOURNAL_VIEW_ROLES:
+            return Response(
+                {'success': False, 'message': 'Your role does not have permission to view journal entries.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -233,9 +248,14 @@ class JournalDetailView(APIView):
 
     def patch(self, request, company_id, entry_id):
         company, membership = get_company_and_membership(request, company_id)
-        if not membership or membership.role not in JOURNAL_WRITE_ROLES:
+        if not membership:
             return Response(
-                {'success': False, 'message': 'Only Owner, Admin, or Accountant can edit journal entries.'},
+                {'success': False, 'message': 'You do not have access to this company.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if membership.role not in JOURNAL_WRITE_ROLES:
+            return Response(
+                {'success': False, 'message': 'Only Owner, Admin, or Accountant can create journal entries.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -293,9 +313,14 @@ class JournalDetailView(APIView):
 
     def delete(self, request, company_id, entry_id):
         company, membership = get_company_and_membership(request, company_id)
-        if not membership or membership.role not in JOURNAL_WRITE_ROLES:
+        if not membership:
             return Response(
-                {'success': False, 'message': 'Only Owner, Admin, or Accountant can delete journal entries.'},
+                {'success': False, 'message': 'You do not have access to this company.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if membership.role not in JOURNAL_WRITE_ROLES:
+            return Response(
+                {'success': False, 'message': 'Only Owner, Admin, or Accountant can create journal entries.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -324,9 +349,14 @@ class JournalPostView(APIView):
 
     def post(self, request, company_id, entry_id):
         company, membership = get_company_and_membership(request, company_id)
-        if not membership or membership.role not in JOURNAL_WRITE_ROLES:
+        if not membership:
             return Response(
-                {'success': False, 'message': 'Only Owner, Admin, or Accountant can post journal entries.'},
+                {'success': False, 'message': 'You do not have access to this company.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if membership.role not in JOURNAL_WRITE_ROLES:
+            return Response(
+                {'success': False, 'message': 'Only Owner, Admin, or Accountant can create journal entries.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -357,9 +387,14 @@ class JournalVoidView(APIView):
 
     def post(self, request, company_id, entry_id):
         company, membership = get_company_and_membership(request, company_id)
-        if not membership or membership.role not in JOURNAL_WRITE_ROLES:
+        if not membership:
             return Response(
-                {'success': False, 'message': 'Only Owner, Admin, or Accountant can void journal entries.'},
+                {'success': False, 'message': 'You do not have access to this company.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if membership.role not in JOURNAL_WRITE_ROLES:
+            return Response(
+                {'success': False, 'message': 'Only Owner, Admin, or Accountant can create journal entries.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -402,11 +437,16 @@ class AccountLedgerView(APIView):
     GET → List all ledger entries for a specific account.
     Shows the transaction history of an account.
     """
-    def get(self, request, company_id, account_id):
+    def get(self, request, company_id):
         company, membership = get_company_and_membership(request, company_id)
-        if not membership or membership.role not in JOURNAL_VIEW_ROLES:
+        if not membership:
             return Response(
-                {'success': False, 'message': 'You do not have access.'},
+                {'success': False, 'message': 'You do not have access to this company.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if membership.role not in JOURNAL_VIEW_ROLES:
+            return Response(
+                {'success': False, 'message': 'Your role does not have permission to view journal entries.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
@@ -470,9 +510,14 @@ class AccountBalanceView(APIView):
 
     def get(self, request, company_id, account_id):
         company, membership = get_company_and_membership(request, company_id)
-        if not membership or membership.role not in JOURNAL_VIEW_ROLES:
+        if not membership:
             return Response(
-                {'success': False, 'message': 'You do not have access.'},
+                {'success': False, 'message': 'You do not have access to this company.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if membership.role not in JOURNAL_VIEW_ROLES:
+            return Response(
+                {'success': False, 'message': 'Your role does not have permission to view journal entries.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 

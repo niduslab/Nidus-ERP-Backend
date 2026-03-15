@@ -81,6 +81,7 @@ class CompanyUserAdmin(admin.ModelAdmin):
     )
 
     list_filter = (
+        'company',
         'role',
         'is_active',
     )
@@ -142,3 +143,4 @@ class CurrencyExchangeRateAdmin(admin.ModelAdmin):
     list_display = ('company', 'currency_code', 'rate_to_base', 'effective_date', 'source')
     list_filter = ('company', 'currency_code', 'source')
     ordering = ('-effective_date',)
+    readonly_fields=('id',)  

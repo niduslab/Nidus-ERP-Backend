@@ -185,8 +185,6 @@ OTP_EXPIRY_MINUTES = int(os.getenv('OTP_EXPIRY_MINUTES', '10'))
 
 # Frontend URL — used in email templates for links (e.g., "Create Account" button)
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:3000')
-
-
 # ──────────────────────────────────────────────
 # JAZZMIN ADMIN PANEL CONFIGURATION
 # ──────────────────────────────────────────────
@@ -200,7 +198,7 @@ JAZZMIN_SETTINGS = {
     'copyright': 'Nidus ERP',
 
     # ── Search bar at the top ──
-    'search_model': ['accounts.Account', 'companies.Company', 'authentication.User'],
+    'search_model': ['chartofaccounts.Account', 'companies.Company', 'authentication.User'],
 
     # ── Top menu links ──
     'topmenu_links': [
@@ -215,19 +213,22 @@ JAZZMIN_SETTINGS = {
     'order_with_respect_to': [
         'authentication',
         'companies',
-        'accounts',
+        'chartofaccounts',
+        'journals',
     ],
 
     # ── Icons for each app and model ──
-    # These use Font Awesome 5 icon names (fas = solid icons)
     'icons': {
         'authentication.User': 'fas fa-user',
         'companies.Company': 'fas fa-building',
         'companies.CompanyUser': 'fas fa-user-tie',
         'companies.PendingInvitation': 'fas fa-envelope-open',
-        'accounts.AccountClassification': 'fas fa-folder-tree',
-        'accounts.Account': 'fas fa-book',
-        'accounts.SystemAccountMapping': 'fas fa-link',
+        'chartofaccounts.AccountClassification': 'fas fa-folder-tree',
+        'chartofaccounts.Account': 'fas fa-book',
+        'chartofaccounts.SystemAccountMapping': 'fas fa-link',
+        'journals.ManualJournal': 'fas fa-file-invoice',
+        'journals.ManualJournalLine': 'fas fa-list',
+        'journals.LedgerEntry': 'fas fa-table',
         'auth.Group': 'fas fa-users',
         'token_blacklist.BlacklistedToken': 'fas fa-ban',
         'token_blacklist.OutstandingToken': 'fas fa-key',
@@ -265,7 +266,7 @@ JAZZMIN_UI_TWEAKS = {
     'sidebar_nav_legacy_style': False,
     'sidebar_nav_flat_style': False,
     'theme': 'default',
-    'dark_mode_theme': None,
+    'default_theme_mode': 'light',   # ← replaces deprecated dark_mode_theme
     'button_classes': {
         'primary': 'btn-primary',
         'secondary': 'btn-secondary',
@@ -275,37 +276,3 @@ JAZZMIN_UI_TWEAKS = {
         'success': 'btn-success',
     },
 }
-
-
-
-LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'formatters': {
-        'verbose': {
-            'format': '[{asctime}] {levelname} {name}: {message}',
-            'style': '{',
-        },
-    },
-    'handlers': {
-        'console': {
-            'class': 'logging.StreamHandler',
-            'formatter': 'verbose',
-        },
-    },
-    'loggers': {
-        'nidus_erp.email_service': {
-            'handlers': ['console'],
-            'level': 'INFO',
-            'propagate': False,
-        },
-        'django': {
-            'handlers': ['console'],
-            'level': 'WARNING',
-            'propagate': False,
-        },
-    },
-}
-
-
-

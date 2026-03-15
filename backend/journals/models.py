@@ -57,16 +57,10 @@ class JournalTypeChoices(models.TextChoices):
 
 
 class JournalStatusChoices(models.TextChoices):
-    """
-    Status lifecycle: DRAFT → POSTED → VOID
-
-    DRAFT:  Work in progress. Editable, deletable. Does NOT affect balances.
-    POSTED: Official. Frozen. DOES affect balances. Can only be voided.
-    VOID:   Cancelled. A reversing entry is auto-created. Read-only forever.
-    """
-    DRAFT  = 'DRAFT', 'Draft'
-    POSTED = 'POSTED', 'Posted'
-    VOID   = 'VOID', 'Void'
+    DRAFT    = 'DRAFT', 'Draft'
+    POSTED   = 'POSTED', 'Posted'
+    VOID     = 'VOID', 'Void'
+    REVERSAL = 'REVERSAL', 'Reversal'
 
 
 class EntryTypeChoices(models.TextChoices):
@@ -465,7 +459,7 @@ class LedgerEntry(models.Model):
     currency = models.CharField(
         max_length=3,
         verbose_name='currency',
-        help_text="The ledger account's currency.",
+        help_text="The transaction currency (journal's currency).",
     )
 
     amount = models.DecimalField(

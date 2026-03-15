@@ -88,6 +88,10 @@ class ManualJournalLineInputSerializer(serializers.Serializer):
     def validate_amount(self, value):
         if value <= 0:
             raise serializers.ValidationError('Amount must be greater than zero.')
+        if value > Decimal('999999999999.99'):
+            raise serializers.ValidationError(
+                'Amount cannot exceed 999,999,999,999.99 (approximately 1 trillion).'
+            )
         return value
 
 
