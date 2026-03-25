@@ -487,9 +487,95 @@ def get_account_balance(account, as_of_date=None, include_sub_accounts=True):
     }
 
 
+ 
+def bulk_create_journals(company, created_by, parsed_entries):
+    """
+    Create multiple draft journal entries from validated bulk import data.
+ 
+    Each entry in parsed_entries has already been validated by
+    bulk_import_validator.py — account lookups, balance checks,
+    and entry number uniqueness are all confirmed.
+ 
+    Returns:
+        list of created ManualJournal instances
+    """
+    created_journals = []
+ 
+    with transaction.atomic():
+        for entry_data in parsed_entries:
+            journal = ManualJournal.objects.create(
+                company=company,
+                entry_number=entry_data['entry_number'],
+                date=entry_data['date'],
+                description=entry_data['description'],
+                reference=entry_data.get('reference'),
+                journal_type=entry_data.get('journal_type'),
+                status=JournalStatusChoices.DRAFT,
+                currency=entry_data.get('currency', company.base_currency),
+                exchange_rate=entry_data.get('exchange_rate', Decimal('1.000000')),
+                created_by=created_by,
+            )
+ 
+            for line_data in entry_data['lines']:
+                ManualJournalLine.objects.create(
+                    journal=journal,
+                    account=line_data['account'],
+                    entry_type=line_data['entry_type'],
+                    amount=line_data['amount'],
+                    description=line_data.get('description'),
+                )
+ 
+            created_journals.append(journal)
+ 
+        # Update DocumentSequence.next_number so future API-created
+        # journals don't collide with imported entry numbers.
+        # Extract numeric parts from imported entry numbers and find the max.
+        _update_sequence_after_import(company, parsed_entries)
+ 
+    return created_journals
+ 
+ 
+def _update_sequence_after_import(company, parsed_entries):
+    """
+    After bulk import, ensure DocumentSequence.next_number is higher
+    than any imported entry number to prevent future collisions.
+ 
+    Only updates if the imported numbers are higher than the current next_number.
+    """
+    try:
+        seq = DocumentSequence.objects.select_for_update().get(
+            company=company,
+            module='MANUAL_JOURNAL',
+        )
+    except DocumentSequence.DoesNotExist:
+        return  # No sequence configured — skip
+ 
+    max_imported = 0
+    for entry in parsed_entries:
+        # Try to extract the numeric part from entry_number
+        # e.g., "JE-0050" → 50, "MJ-123" → 123
+        num_str = entry['entry_number']
+        # Remove all non-digit characters
+        digits = ''.join(c for c in num_str if c.isdigit())
+        if digits:
+            try:
+                num = int(digits)
+                if num > max_imported:
+                    max_imported = num
+            except ValueError:
+                pass
+ 
+    # Only update if imported numbers are higher
+    if max_imported >= seq.next_number:
+        seq.next_number = max_imported + 1
+        seq.save(update_fields=['next_number', 'updated_at'])
+
+
+
 # ══════════════════════════════════════════════════
 # INTERNAL HELPERS
 # ══════════════════════════════════════════════════
+
 
 def _create_ledger_entry(
     company, account, date, entry_type, amount,
@@ -543,9 +629,9 @@ def _validate_journal_data(company, journal_data, lines_data):
 
     if company.lock_date and journal_data['date'] <= company.lock_date:
         errors.append(
-            f'Transaction date {journal_data["date"]} is on or before '
-            f'the lock date ({company.lock_date}). '
+            f'Transaction date {journal_data["date"]} is on or before the lock date ({company.lock_date}). '
             f'Transactions before the lock date are frozen.'
+            f'Choose a date after {company.lock_date} or ask an Owner/Admin to change the lock date.'
         )
 
     exchange_rate = journal_data.get('exchange_rate', Decimal('1.000000'))

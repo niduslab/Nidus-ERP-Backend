@@ -11,9 +11,14 @@ from .models import ManualJournal, ManualJournalLine, LedgerEntry
 class ManualJournalLineInline(admin.TabularInline):
     model = ManualJournalLine
     extra = 0
-    readonly_fields = ('id', 'created_at')
+    readonly_fields = ('id', 'account', 'entry_type', 'amount', 'tax_profile', 'description', 'created_at')
     fields = ('account', 'entry_type', 'amount', 'tax_profile', 'description', 'created_at')
-    autocomplete_fields = ['account']
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 class LedgerEntryInlineForJournal(admin.TabularInline):
@@ -37,13 +42,30 @@ class ManualJournalAdmin(admin.ModelAdmin):
     search_fields = ('entry_number', 'description', 'reference')
     ordering = ('-date', '-created_at')
     readonly_fields = (
-        'id', 'entry_number', 'status',
+        'id', 'company', 'entry_number', 'status', 'currency',
+        'exchange_rate', 'date', 'description', 'reference',
+        'journal_type',
         'posted_at', 'voided_at', 'voided_by',
         'voided_by_entry_link', 'reversal_of_link',
         'created_by', 'created_at', 'updated_at',
         'ledger_entries_summary',
     )
     inlines = [ManualJournalLineInline]
+
+    # ── Prevent creating journals from admin ──
+    def has_add_permission(self, request):
+        """
+        Disable the 'Add' button in admin.
+        Journals must be created via the API where double-entry
+        validation, lock date checks, and entry numbering are enforced.
+        """
+        return False
+
+    # ── Prevent deleting posted/void journals from admin ──
+    def has_delete_permission(self, request, obj=None):
+        if obj and obj.status != 'DRAFT':
+            return False
+        return super().has_delete_permission(request, obj)
 
     fieldsets = (
         ('Journal Header', {
@@ -137,13 +159,24 @@ class LedgerEntryAdmin(admin.ModelAdmin):
         'currency', 'base_amount', 'source_module',
         'journal_type', 'source_journal_link',
     )
-    list_filter = ('company','source_module', 'journal_type', 'entry_type' )
-    search_fields = ('note', 'ledger_account__name', 'ledger_account__code')
+    list_filter = (
+        'company',
+        ('ledger_account', admin.RelatedOnlyFieldListFilter),  # ← Shows only accounts that have entries
+        'source_module',
+        'journal_type',
+        'entry_type',
+    )
+    search_fields = (
+        'note',
+        'ledger_account__name',
+        'ledger_account__code',
+    )
     ordering = ('-date', '-created_at')
     readonly_fields = (
         'id', 'content_type', 'object_id',
         'source_journal_link', 'created_at',
     )
+    autocomplete_fields = ['ledger_account']
 
     fieldsets = (
         ('Ledger Entry', {
@@ -183,3 +216,15 @@ class LedgerEntryAdmin(admin.ModelAdmin):
             pass
         return '—'
     source_journal_link.short_description = 'Source journal'
+
+    def has_add_permission(self, request):
+        """Ledger entries are system-generated. Cannot create manually."""
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        """Ledger entries are immutable after creation."""
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        """Ledger entries cannot be deleted. Void the source journal instead."""
+        return False

@@ -261,6 +261,20 @@ class CreateAccountSerializer(serializers.Serializer):
         help_text='Optional description of the account.',
     )
 
+    def validate_name(self, value):
+        company = self.context['company']
+        # Check company-wide uniqueness (not just within classification)
+        if Account.objects.filter(
+            company=company,
+            name=value,
+            is_active=True,
+        ).exists():
+            raise serializers.ValidationError(
+                f'An active account named "{value}" already exists in this company. '
+                f'Account names must be unique across the entire Chart of Accounts.'
+            )
+        return value
+
     def validate_code(self, value):
         """
         Account codes cannot contain spaces and must be unique
@@ -428,6 +442,20 @@ class UpdateAccountSerializer(serializers.Serializer):
         required=False,
         allow_blank=True,
     )
+
+    def validate_name(self, value):
+        company = self.context['company']
+        account = self.context['account']
+        if Account.objects.filter(
+            company=company,
+            name=value,
+            is_active=True,
+        ).exclude(id=account.id).exists():
+            raise serializers.ValidationError(
+                f'An active account named "{value}" already exists in this company. '
+                f'Account names must be unique across the entire Chart of Accounts.'
+            )
+        return value
 
     def validate_code(self, value):
         if ' ' in value:

@@ -212,30 +212,25 @@ class Account(models.Model):
                 name='unique_account_path_per_company',
             ),
             # ────────────────────────────────────────────────
-            # DUPLICATE NAME PREVENTION
+            # DUPLICATE NAME PREVENTION (COMPANY-WIDE)
             # ────────────────────────────────────────────────
-            # Two accounts under the same classification cannot share a name.
+            # Account names must be unique across the entire company's CoA.
+            # This enables bulk import by account name (no ambiguity).
             #
-            # WHY classification-level and not company-wide?
-            #   Company-wide would be too strict. It's legitimate to have
-            #   "Other" accounts under different groups, or names like
-            #   "Adjustment" in both Revenue and Expense classifications.
-            #   But two "Petty Cash" accounts under "Cash" is always a mistake.
+            # WHY company-wide instead of per-classification?
+            #   Bulk journal import uses account names to identify accounts.
+            #   If two accounts share a name under different classifications,
+            #   the system can't determine which one the user means.
             #
-            # WHY include is_active in the condition?
-            #   We use condition=Q(is_active=True) so that deactivated accounts
-            #   don't block the name. If a user deactivates "Old Petty Cash" and
-            #   wants to create a new "Old Petty Cash", the constraint won't
-            #   interfere. Only active accounts compete for name uniqueness.
-            #
-            # This is the last line of defence. The serializer and validator
-            # also check this, but the database constraint guarantees it even
-            # if those checks are bypassed (e.g., via Django shell or migrations).
+            # WHY include is_active?
+            #   Deactivated accounts don't block the name. If a user
+            #   deactivates "Old Petty Cash" and creates a new one, the
+            #   constraint won't interfere.
             # ────────────────────────────────────────────────
             models.UniqueConstraint(
-                fields=['company', 'classification', 'name'],
+                fields=['company', 'name'],
                 condition=models.Q(is_active=True),
-                name='unique_active_account_name_per_classification',
+                name='unique_active_account_name_per_company',
             ),
         ]
 

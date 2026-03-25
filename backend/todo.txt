@@ -2,9 +2,6 @@
 STEP 4 — IMMEDIATE (before/during testing)
 ══════════════════════════════════════════════════════════
 
-[ ] Add StandardResultsSetPagination (your code above)
-    → Apply to JournalListCreateView.get()
-    → Apply to AccountLedgerView.get()
 
 [ ] Auto-create DocumentSequence on company creation
     → Add to generate_default_coa() in chartofaccounts/services.py

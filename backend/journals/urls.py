@@ -13,6 +13,17 @@ urlpatterns = [
         views.JournalListCreateView.as_view(),
         name='journal-list-create',
     ),
+    # ── Bulk Import ──
+    path(
+        'journal-entries/bulk-import/template/',
+        views.BulkImportTemplateDownloadView.as_view(),
+        name='bulk-import-template',
+    ),
+    path(
+        'journal-entries/bulk-import/upload/',
+        views.BulkImportUploadView.as_view(),
+        name='bulk-import-upload',
+    ),
     path(
         'journal-entries/<uuid:entry_id>/',
         views.JournalDetailView.as_view(),

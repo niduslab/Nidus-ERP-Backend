@@ -134,7 +134,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
 STATIC_URL = 'static/'
-
+STATICFILES_DIRS = [BASE_DIR / 'static']
 
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
@@ -198,7 +198,7 @@ JAZZMIN_SETTINGS = {
     'copyright': 'Nidus ERP',
 
     # ── Search bar at the top ──
-    'search_model': ['chartofaccounts.Account', 'companies.Company', 'authentication.User'],
+    'search_model': ['chartofaccounts.Account', 'companies.Company', 'authentication.User', 'journals.ManualJournal','journals.LedgerEntry',],
 
     # ── Top menu links ──
     'topmenu_links': [
@@ -232,6 +232,11 @@ JAZZMIN_SETTINGS = {
         'auth.Group': 'fas fa-users',
         'token_blacklist.BlacklistedToken': 'fas fa-ban',
         'token_blacklist.OutstandingToken': 'fas fa-key',
+
+        'companies.TaxProfile': 'fas fa-percent',
+        'companies.TaxProfileLayer': 'fas fa-layer-group',
+        'companies.DocumentSequence': 'fas fa-hashtag',
+        'companies.CurrencyExchangeRate': 'fas fa-exchange-alt',
     },
 
     # Default icon for models not listed above

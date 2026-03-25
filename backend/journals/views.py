@@ -21,6 +21,12 @@ DESIGN:
     contain financial calculations or state transitions directly.
 """
 
+from django.http import HttpResponse
+from rest_framework.parsers import MultiPartParser, FormParser
+from .bulk_import_template import generate_bulk_import_template
+from .bulk_import_validator import validate_bulk_import
+from .services import bulk_create_journals
+
 from django.shortcuts import get_object_or_404
 
 from rest_framework import status
@@ -218,7 +224,7 @@ class JournalDetailView(APIView):
     DELETE → Delete a draft journal
     """
 
-    def get(self, request, company_id):
+    def get(self, request, company_id, entry_id):
         company, membership = get_company_and_membership(request, company_id)
         if not membership:
             return Response(
@@ -437,7 +443,7 @@ class AccountLedgerView(APIView):
     GET → List all ledger entries for a specific account.
     Shows the transaction history of an account.
     """
-    def get(self, request, company_id):
+    def get(self, request, company_id,account_id):
         company, membership = get_company_and_membership(request, company_id)
         if not membership:
             return Response(
@@ -554,3 +560,199 @@ class AccountBalanceView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+    
+
+
+class BulkImportTemplateDownloadView(APIView):
+    """
+    GET /api/companies/<id>/journal-entries/bulk-import/template/
+ 
+    Download the bulk import Excel template, pre-populated with
+    this company's account reference sheet.
+    """
+ 
+    def get(self, request, company_id):
+        company, membership = get_company_and_membership(request, company_id)
+ 
+        if not membership:
+            return Response(
+                {'success': False, 'message': 'You do not have access to this company.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+ 
+        if membership.role not in JOURNAL_WRITE_ROLES:
+            return Response(
+                {'success': False, 'message': 'Only Owner, Admin, or Accountant can download the import template.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+ 
+        from .bulk_import_template import generate_bulk_import_template
+ 
+        file_bytes = generate_bulk_import_template(company)
+ 
+        response = HttpResponse(
+            file_bytes,
+            content_type=(
+                'application/vnd.openxmlformats-officedocument'
+                '.spreadsheetml.sheet'
+            ),
+        )
+        safe_name = company.name.replace('"', '').replace(' ', '_')[:30]
+        response['Content-Disposition'] = (
+            f'attachment; filename="NidusERP_Bulk_Journal_Import_{safe_name}.xlsx"'
+        )
+ 
+        return response
+ 
+ 
+class BulkImportUploadView(APIView):
+    """
+    POST /api/companies/<id>/journal-entries/bulk-import/upload/
+ 
+    Upload a filled bulk import file (.xlsx or .csv).
+ 
+    Form data:
+        file: The uploaded file
+        save_mode: "valid_only" or "all_or_none" (default: "all_or_none")
+ 
+    "valid_only":  Save accepted entries, return rejected with errors.
+    "all_or_none": If ANY entry fails, save nothing, return all errors.
+ 
+    All imported entries are created as DRAFT.
+    """
+    parser_classes = [MultiPartParser, FormParser]
+ 
+    def post(self, request, company_id):
+        company, membership = get_company_and_membership(request, company_id)
+ 
+        if not membership:
+            return Response(
+                {'success': False, 'message': 'You do not have access to this company.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+ 
+        if membership.role not in JOURNAL_WRITE_ROLES:
+            return Response(
+                {'success': False, 'message': 'Only Owner, Admin, or Accountant can import journal entries.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+ 
+        # ── Get the uploaded file ──
+        uploaded_file = request.FILES.get('file')
+        if not uploaded_file:
+            return Response(
+                {'success': False, 'message': 'No file uploaded. Please attach an .xlsx or .csv file.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+ 
+        save_mode = request.data.get('save_mode', 'all_or_none')
+        if save_mode not in ('valid_only', 'all_or_none'):
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Invalid save_mode. Must be "valid_only" or "all_or_none".',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+ 
+        # ── Validate the file ──
+        from .bulk_import_validator import validate_bulk_import
+ 
+        result = validate_bulk_import(
+            file_obj=uploaded_file,
+            file_name=uploaded_file.name,
+            company=company,
+        )
+ 
+        # ── File-level error (can't even parse) ──
+        if result.get('file_error'):
+            return Response(
+                {
+                    'success': False,
+                    'message': result['file_error'],
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+ 
+        # ── All-or-none mode: reject everything if any errors ──
+        if save_mode == 'all_or_none' and not result['valid']:
+            return Response(
+                {
+                    'success': False,
+                    'message': (
+                        f'Import rejected. {result["summary"]["rejected"]} of '
+                        f'{result["summary"]["total_groups"]} entries have errors. '
+                        f'Fix all errors and re-upload, or use save_mode="valid_only" '
+                        f'to save only the valid entries.'
+                    ),
+                    'summary': result['summary'],
+                    'accepted_entries': result['accepted_entries'],   # ← ADD THIS LINE
+                    'rejected_entries': result['rejected_entries'],
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+ 
+        # ── No valid entries to save ──
+        if not result['parsed_data']:
+            return Response(
+                {
+                    'success': False,
+                    'message': 'No valid entries found in the file.',
+                    'summary': result['summary'],
+                    'rejected_entries': result['rejected_entries'],
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+ 
+        # ── Save valid entries ──
+        from .services import bulk_create_journals
+ 
+        try:
+            created = bulk_create_journals(
+                company=company,
+                created_by=request.user,
+                parsed_entries=result['parsed_data'],
+            )
+        except Exception as e:
+            return Response(
+                {
+                    'success': False,
+                    'message': f'Import failed during save: {str(e)}',
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+ 
+        # ── Build response ──
+        accepted_summary = [
+            {
+                'entry_number': j.entry_number,
+                'date': str(j.date),
+                'description': j.description,
+                'status': j.status,
+                'lines': j.lines.count(),
+            }
+            for j in created
+        ]
+ 
+        response_data = {
+            'success': True,
+            'message': (
+                f'Successfully imported {len(created)} journal entries as DRAFT. '
+                f'{result["summary"]["rejected"]} entries were rejected.'
+                if result['summary']['rejected'] > 0
+                else f'Successfully imported {len(created)} journal entries as DRAFT.'
+            ),
+            'summary': {
+                'total_groups': result['summary']['total_groups'],
+                'accepted': len(created),
+                'rejected': result['summary']['rejected'],
+                'total_rows': result['summary']['total_rows'],
+            },
+            'accepted_entries': accepted_summary,
+        }
+ 
+        if result['rejected_entries']:
+            response_data['rejected_entries'] = result['rejected_entries']
+ 
+        return Response(response_data, status=status.HTTP_201_CREATED)
+ 

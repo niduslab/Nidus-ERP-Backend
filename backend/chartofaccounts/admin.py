@@ -11,10 +11,35 @@ from .models import AccountClassification, Account, SystemAccountMapping
 @admin.register(AccountClassification)
 class AccountClassificationAdmin(admin.ModelAdmin):
     list_display = ['internal_path', 'name', 'layer', 'parent', 'company']
-    list_filter = ['company']
+    list_filter = ['company', 'name']
     search_fields = ['name', 'internal_path', 'company__name']
     ordering = ['company', 'internal_path']
-    readonly_fields = ['id', 'internal_path', 'created_at']
+    readonly_fields = ['id', 'internal_path', 'created_at'] 
+
+    class Media:
+        js = ('admin/js/company_scoped_filter.js',)
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        """
+        Restrict parent dropdown to Layer 2 only.
+        Users can only create Layer 3 classifications (under Layer 2 parents).
+        Layer 1 and Layer 2 are system-generated during CoA creation.
+        """
+        if db_field.name == 'parent':
+            # Layer 2 = exactly 1 dot in internal_path (e.g., "1.10")
+            kwargs['queryset'] = AccountClassification.objects.filter(
+                internal_path__regex=r'^[^.]+\.[^.]+$'
+            )
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+    def save_model(self, request, obj, form, change):
+        """Auto-generate internal_path for new classifications."""
+        if not change and obj.parent:
+            from .views import generate_next_internal_path
+            obj.internal_path = generate_next_internal_path(
+                obj.company, obj.parent.internal_path
+            )
+        super().save_model(request, obj, form, change)
 
 
 @admin.register(Account)
@@ -34,6 +59,9 @@ class AccountAdmin(admin.ModelAdmin):
         'id', 'internal_path', 'created_at', 'updated_at',
         'ledger_summary',
     ]
+
+    class Media:
+        js = ('admin/js/company_scoped_filter.js',)
 
     fieldsets = (
         ('Account', {
@@ -166,3 +194,6 @@ class SystemAccountMappingAdmin(admin.ModelAdmin):
     search_fields = ['system_code', 'account__name', 'company__name']
     ordering = ['company', 'system_code']
     readonly_fields = ['company', 'id', 'system_code']
+    
+    class Media:
+        js = ('admin/js/company_scoped_filter.js',)

@@ -404,7 +404,7 @@ def _validate_classifications(ws, result):
 def _validate_accounts(ws, result, valid_classifications):
     system_accounts_found = {}
     all_codes = {}
-    all_names_in_class = {}
+    all_account_names = {}
 
     num_cols = len(ACCOUNT_HEADERS)
 
@@ -593,18 +593,16 @@ def _validate_accounts(ws, result, valid_classifications):
                 f'or use a valid code (e.g., BDT, USD, EUR, GBP).'
             )
 
-        if classification and account_name:
-            key = (classification, account_name)
-            if key in all_names_in_class:
+        if account_name:
+            if account_name in all_account_names:
                 result.add_error(
                     'Accounts', row, 'Account Name',
-                    f'Duplicate account name "{account_name}" under '
-                    f'classification "{classification}" '
-                    f'(first appears on row {all_names_in_class[key]}). '
-                    f'Accounts under the same classification should have unique names.'
+                    f'Duplicate account name "{account_name}" '
+                    f'(first appears on row {all_account_names[account_name]}). '
+                    f'Account names must be unique across the entire Chart of Accounts.'
                 )
             else:
-                all_names_in_class[key] = row
+                all_account_names[account_name] = row 
 
     # ── Check all 43 system accounts are present ──
     missing_system = set(SYSTEM_ACCOUNT_REFERENCE.keys()) - set(system_accounts_found.keys())
