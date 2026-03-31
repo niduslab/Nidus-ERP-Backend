@@ -10,8 +10,13 @@ All report views follow the same pattern:
     4. Return the formatted response
 
 PERMISSIONS:
-    All roles can view reports (OWNER, ADMIN, ACCOUNTANT, AUDITOR,
-    SALES, INVENTORY). Reports are read-only — no data modification.
+    All roles can view reports. Reports are read-only.
+
+NOTE ON QUERY PARAMETERS:
+    We use 'layout' instead of 'format' because DRF reserves
+    the 'format' parameter for content negotiation (e.g.,
+    ?format=json, ?format=api). Using ?format=flat causes a 404
+    because DRF tries to find a renderer for the 'flat' format.
 """
 
 from datetime import date, datetime
@@ -36,7 +41,6 @@ def _get_company_and_check_access(request, company_id):
     Returns:
         (company, error_response) — one of them will be None.
     """
-    # ── Company exists? ──
     try:
         company = Company.objects.get(id=company_id)
     except Company.DoesNotExist:
@@ -65,10 +69,6 @@ def _parse_date_param(value, param_name):
     """
     Parse a date string from query parameters.
 
-    Args:
-        value: str or None
-        param_name: str — name of the parameter (for error messages)
-
     Returns:
         (date_obj, error_message) — one will be None
     """
@@ -95,11 +95,15 @@ class TrialBalanceView(APIView):
         filter_mode     (str, optional)  'all', 'with_transactions',
                                          or 'non_zero'. Default: 'non_zero'.
         compare_date    (str, optional)  YYYY-MM-DD for comparison column.
-        format          (str, optional)  'nested' or 'flat'. Default: 'nested'.
+        layout          (str, optional)  'nested' or 'flat'. Default: 'nested'.
+                        NOTE: We use 'layout' not 'format' because
+                        DRF reserves 'format' for content negotiation.
 
     Returns:
-        Nested: groups → L1 → L2 → L3 → accounts with subtotals.
-        Flat: flat_accounts → simple list with classification context.
+        Nested: groups → L1 → L2 → L3 → accounts (with infinite
+                sub-account depth). Each account shows own balance
+                plus subtotal including all children.
+        Flat: flat_accounts → simple list with depth and parent info.
         Both include grand totals and is_balanced flag.
     """
 
@@ -149,14 +153,16 @@ class TrialBalanceView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # ── Parse format (default: nested) ──
-        response_format = request.query_params.get('layout', 'nested')
-        if response_format not in ('nested', 'flat'):
+        # ── Parse layout (default: nested) ──
+        # NOTE: 'format' is reserved by DRF for content negotiation.
+        # Using 'layout' avoids the ?format=flat → 404 issue.
+        response_layout = request.query_params.get('layout', 'nested')
+        if response_layout not in ('nested', 'flat'):
             return Response(
                 {
-                    'success': False, 
+                    'success': False,
                     'message': (
-                        f'Invalid format: "{response_format}". '
+                        f'Invalid layout: "{response_layout}". '
                         f'Valid options: nested, flat.'
                     ),
                 },
@@ -171,7 +177,7 @@ class TrialBalanceView(APIView):
             compare_date=compare_date,
         )
 
-        # ── Build response based on format ──
+        # ── Build response ──
         response = {
             'success': True,
             'data': {
@@ -195,8 +201,8 @@ class TrialBalanceView(APIView):
             response['data']['compare_grand_total_debit'] = report_data['compare_grand_total_debit']
             response['data']['compare_grand_total_credit'] = report_data['compare_grand_total_credit']
 
-        # Add grouped or flat data based on format
-        if response_format == 'nested':
+        # Add grouped or flat data based on layout
+        if response_layout == 'nested':
             response['data']['groups'] = report_data['groups']
         else:
             response['data']['accounts'] = report_data['flat_accounts']

@@ -12,6 +12,10 @@ DESIGN PRINCIPLES:
     2. Always uses base_amount — multi-currency is already converted.
     3. Returns raw data — formatting/grouping is the caller's job.
     4. Stateless — no caching, no side effects, pure functions.
+    5. NEVER filters by is_active — inactive accounts may hold balances
+       that are critical for accurate financial reporting. Deactivation
+       only prevents NEW journal entries; it must never hide existing
+       balances from reports.
 
 BALANCE FORMULA:
     net = SUM(base_amount WHERE entry_type=DEBIT)
@@ -21,16 +25,11 @@ BALANCE FORMULA:
     If net < 0 → credit balance (show abs value)
     If net = 0 → zero balance
 
-    This is purely arithmetic. A Liability account CAN have a debit
-    balance (e.g., overpayment). The Trial Balance reflects reality,
-    not expectations. The normal_balance field is included in the
-    response for the frontend to flag unusual balances if desired.
-
 CALLED BY:
     reports/services/trial_balance.py
-    reports/services/balance_sheet.py
-    reports/services/income_statement.py
-    reports/services/account_statement.py
+    (future) reports/services/balance_sheet.py
+    (future) reports/services/income_statement.py
+    (future) reports/services/account_statement.py
 """
 
 from decimal import Decimal
@@ -57,19 +56,13 @@ def get_account_balances(company, as_of_date):
             'net': Decimal,   # positive = debit balance, negative = credit balance
         }}
 
-    Performance:
-        Single query with GROUP BY. Returns one row per account.
-        Typically executes in <50ms for 10,000+ ledger entries.
+    NOTE:
+        This queries LedgerEntry which only contains POSTED entries.
+        DRAFT journals have no ledger entries and are automatically
+        excluded. Inactive accounts ARE included — they may hold
+        balances from before they were deactivated.
     """
     # ── Single aggregation query ──
-    # Uses conditional SUM to get debit and credit totals in one pass.
-    # Django ORM translates this to:
-    #   SELECT ledger_account_id,
-    #          SUM(CASE WHEN entry_type='DEBIT' THEN base_amount ELSE 0 END),
-    #          SUM(CASE WHEN entry_type='CREDIT' THEN base_amount ELSE 0 END)
-    #   FROM journals_ledgerentry
-    #   WHERE company_id = %s AND date <= %s
-    #   GROUP BY ledger_account_id
     aggregated = (
         LedgerEntry.objects
         .filter(
@@ -95,7 +88,6 @@ def get_account_balances(company, as_of_date):
         )
     )
 
-    # ── Build result dict ──
     balances = {}
     for row in aggregated:
         total_debit = row['total_debit'] or Decimal('0.00')
@@ -117,15 +109,7 @@ def get_accounts_with_transactions(company, as_of_date):
     on or before as_of_date.
 
     Used by the 'with_transactions' filter mode — show accounts that
-    have been used, even if their balance is zero (e.g., an account
-    where debits and credits cancel out).
-
-    Args:
-        company: Company instance
-        as_of_date: datetime.date
-
-    Returns:
-        set: set of account_id UUIDs
+    have been used, even if their balance is zero (e.g., voided).
     """
     return set(
         LedgerEntry.objects

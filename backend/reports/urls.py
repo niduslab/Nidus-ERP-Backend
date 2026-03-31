@@ -7,9 +7,6 @@ All URLs here are included under:
     api/companies/<uuid:company_id>/
 
 So every view automatically receives company_id from the URL.
-
-As new reports are added, their URLs go here. The pattern:
-    reports/<report-name>/
 """
 
 from django.urls import path
@@ -37,4 +34,4 @@ urlpatterns = [
     #      views.AccountStatementView.as_view(), name='account-statement'),
     # path('reports/cash-flow/',
     #      views.CashFlowView.as_view(), name='cash-flow'),
-]
+] 

@@ -3,27 +3,28 @@
 """
 Trial Balance report generation.
 
-Takes raw account balances from balance_engine and transforms them into
-a structured, grouped report ready for API response.
+KEY FEATURES:
+    1. INFINITE SUB-ACCOUNT DEPTH: Accounts nest under their parents
+       to any depth. Each parent shows its own balance plus a subtotal
+       that includes all descendants — exactly like Zoho Books.
 
-GROUPING STRATEGY:
-    Layer 1 (Asset, Liability, Equity, Income, Expense)
-      └─ Layer 2 (Current Asset, Non-Current Asset, ...)
-           └─ Layer 3 (Cash, Bank, Inventory, ...)
-                └─ Accounts (Petty Cash, Bank, ...)
+       Example:
+       Cash (L3 classification)
+         ├─ Petty Cash .............. own: 50,000 | subtotal: 85,000
+         │   ├─ Office Petty Cash .. 20,000
+         │   └─ Branch Petty Cash .. own: 10,000 | subtotal: 15,000
+         │       └─ Dhaka Branch ... 5,000
+         └─ Bank .................. 200,000
 
-    Each layer includes a subtotal. The grand total at the bottom
-    proves that total debits = total credits.
+    2. INACTIVE ACCOUNTS INCLUDED: Deactivated accounts may hold
+       balances. is_active is in the response for frontend styling.
 
-FILTER MODES:
-    - 'all':               Every active account in the CoA
-    - 'with_transactions': Only accounts that have at least 1 ledger entry
-    - 'non_zero':          Only accounts with non-zero balance (default)
+    3. THREE FILTER MODES:
+       - 'all':               Every account in the CoA
+       - 'with_transactions': Accounts with at least 1 ledger entry
+       - 'non_zero':          Accounts with non-zero balance (default)
 
-COMPARISON MODE:
-    When compare_date is provided, the report includes two columns:
-    primary date balances and comparison date balances, plus the
-    change (amount and percentage) between them.
+    4. COMPARISON MODE: Optional second date for side-by-side display.
 
 CALLED FROM:
     reports/views.py → TrialBalanceView
@@ -42,92 +43,72 @@ FILTER_WITH_TRANSACTIONS = 'with_transactions'
 FILTER_NON_ZERO = 'non_zero'
 VALID_FILTER_MODES = {FILTER_ALL, FILTER_WITH_TRANSACTIONS, FILTER_NON_ZERO}
 
+ZERO = Decimal('0.00')
+
 
 def generate_trial_balance(company, as_of_date, filter_mode=FILTER_NON_ZERO,
                            compare_date=None):
     """
     Generate a complete Trial Balance report.
-
-    Args:
-        company: Company instance
-        as_of_date: datetime.date — primary report date
-        filter_mode: str — 'all', 'with_transactions', or 'non_zero'
-        compare_date: datetime.date or None — optional comparison date
-
-    Returns:
-        dict: Complete report data ready for API response
     """
-    # ── Step 1: Get raw balances from the balance engine ──
+    # ── Step 1: Get raw balances ──
     balances = get_account_balances(company, as_of_date)
-
-    compare_balances = None
-    if compare_date:
-        compare_balances = get_account_balances(company, compare_date)
+    compare_balances = get_account_balances(company, compare_date) if compare_date else None
 
     # ── Step 2: Get accounts with transactions (for filter mode) ──
     accounts_with_txn = None
     if filter_mode == FILTER_WITH_TRANSACTIONS:
         accounts_with_txn = get_accounts_with_transactions(company, as_of_date)
         if compare_date:
-            # Union: include accounts with transactions in either period
-            accounts_with_txn |= get_accounts_with_transactions(
-                company, compare_date,
-            )
+            accounts_with_txn |= get_accounts_with_transactions(company, compare_date)
 
-    # ── Step 3: Load all active accounts + classifications ──
-    # Two queries total: one for accounts, one for classifications
-    accounts = (
+    # ── Step 3: Load ALL accounts (active + inactive) ──
+    # CRITICAL: Do NOT filter by is_active.
+    all_accounts = list(
         Account.objects
-        .filter(company=company, is_active=True)
-        .select_related('classification')
+        .filter(company=company)
+        .select_related('classification', 'parent_account')
         .order_by('internal_path')
     )
 
-    classifications = (
+    classifications = list(
         AccountClassification.objects
         .filter(company=company)
         .order_by('internal_path')
     )
 
-    # ── Step 4: Build classification lookup ──
-    # {internal_path: classification object}
     class_map = {c.internal_path: c for c in classifications}
 
-    # ── Step 5: Filter accounts based on filter_mode ──
-    filtered_accounts = []
-    for account in accounts:
-        account_id = account.id
-        bal = balances.get(account_id)
-        comp_bal = compare_balances.get(account_id) if compare_balances else None
+    # ── Step 4: Build parent-child lookups ──
+    children_by_parent = {}  # {parent_account_id: [child accounts]}
+    root_accounts_by_l3 = {}  # {l3_classification_id: [root accounts]}
 
-        if filter_mode == FILTER_NON_ZERO:
-            # Show only if primary OR comparison balance is non-zero
-            has_primary = bal and bal['net'] != Decimal('0.00')
-            has_compare = comp_bal and comp_bal['net'] != Decimal('0.00')
-            if not has_primary and not has_compare:
-                continue
+    for account in all_accounts:
+        if account.parent_account_id:
+            children_by_parent.setdefault(account.parent_account_id, []).append(account)
+        else:
+            root_accounts_by_l3.setdefault(account.classification_id, []).append(account)
 
-        elif filter_mode == FILTER_WITH_TRANSACTIONS:
-            # Show only if the account has at least one transaction
-            if account_id not in accounts_with_txn:
-                continue
-
-        # filter_mode == FILTER_ALL → include everything
-
-        filtered_accounts.append(account)
-
-    # ── Step 6: Build the nested tree structure ──
-    tree = _build_nested_tree(
-        filtered_accounts, class_map, balances, compare_balances,
+    # ── Step 5: Determine included accounts ──
+    included_ids = _get_included_account_ids(
+        all_accounts, balances, compare_balances,
+        accounts_with_txn, filter_mode, children_by_parent,
     )
 
-    # ── Step 7: Calculate grand totals ──
-    grand_total_debit = Decimal('0.00')
-    grand_total_credit = Decimal('0.00')
-    compare_grand_total_debit = Decimal('0.00')
-    compare_grand_total_credit = Decimal('0.00')
+    # ── Step 6: Build nested tree ──
+    has_compare = compare_balances is not None
+    tree = _build_classification_tree(
+        root_accounts_by_l3, children_by_parent, class_map,
+        balances, compare_balances, included_ids,
+    )
 
-    for account in filtered_accounts:
+    # ── Step 7: Grand totals (from ALL accounts, not filtered) ──
+    grand_total_debit = ZERO
+    grand_total_credit = ZERO
+    compare_grand_debit = ZERO
+    compare_grand_credit = ZERO
+
+    for account in all_accounts:
         bal = balances.get(account.id)
         if bal:
             if bal['net'] > 0:
@@ -135,17 +116,18 @@ def generate_trial_balance(company, as_of_date, filter_mode=FILTER_NON_ZERO,
             elif bal['net'] < 0:
                 grand_total_credit += abs(bal['net'])
 
-        if compare_balances:
-            comp_bal = compare_balances.get(account.id)
-            if comp_bal:
-                if comp_bal['net'] > 0:
-                    compare_grand_total_debit += comp_bal['net']
-                elif comp_bal['net'] < 0:
-                    compare_grand_total_credit += abs(comp_bal['net'])
+        if has_compare:
+            comp = compare_balances.get(account.id)
+            if comp:
+                if comp['net'] > 0:
+                    compare_grand_debit += comp['net']
+                elif comp['net'] < 0:
+                    compare_grand_credit += abs(comp['net'])
 
-    # ── Step 8: Build flat list (for ?format=flat) ──
+    # ── Step 8: Build flat list ──
     flat_list = _build_flat_list(
-        filtered_accounts, balances, compare_balances,
+        all_accounts, balances, compare_balances,
+        included_ids, children_by_parent,
     )
 
     return {
@@ -155,250 +137,385 @@ def generate_trial_balance(company, as_of_date, filter_mode=FILTER_NON_ZERO,
         'as_of_date': str(as_of_date),
         'compare_date': str(compare_date) if compare_date else None,
         'filter_mode': filter_mode,
-        'account_count': len(filtered_accounts),
+        'account_count': len([a for a in all_accounts if a.id in included_ids]),
         'groups': tree,
         'flat_accounts': flat_list,
         'grand_total_debit': str(grand_total_debit),
         'grand_total_credit': str(grand_total_credit),
-        'compare_grand_total_debit': str(compare_grand_total_debit) if compare_balances else None,
-        'compare_grand_total_credit': str(compare_grand_total_credit) if compare_balances else None,
+        'compare_grand_total_debit': str(compare_grand_debit) if has_compare else None,
+        'compare_grand_total_credit': str(compare_grand_credit) if has_compare else None,
         'is_balanced': grand_total_debit == grand_total_credit,
     }
 
 
-def _build_nested_tree(accounts, class_map, balances, compare_balances):
+# ══════════════════════════════════════════════════
+# FILTER: DETERMINE WHICH ACCOUNTS TO SHOW
+# ══════════════════════════════════════════════════
+
+def _get_included_account_ids(all_accounts, balances, compare_balances,
+                               accounts_with_txn, filter_mode, children_by_parent):
     """
-    Build a nested tree grouped by Layer 1 > Layer 2 > Layer 3 > Accounts.
+    Determine which accounts pass the filter.
 
-    Returns a list of Layer 1 groups, each containing Layer 2 children,
-    each containing Layer 3 children, each containing account rows.
+    IMPORTANT: If a child passes, its entire parent chain is included
+    so the tree structure remains coherent. A parent with zero balance
+    still appears if its grandchild has a non-zero balance.
     """
-    # ── Organize accounts by their Layer 3 classification path ──
-    # {l3_path: [list of accounts]}
-    accounts_by_l3 = {}
-    for account in accounts:
-        l3_path = account.classification.internal_path
-        if l3_path not in accounts_by_l3:
-            accounts_by_l3[l3_path] = []
-        accounts_by_l3[l3_path].append(account)
+    if filter_mode == FILTER_ALL:
+        return {a.id for a in all_accounts}
 
-    # ── Identify which L1, L2, L3 paths are needed ──
-    # Only include classification nodes that have at least one account
-    needed_l3_paths = set(accounts_by_l3.keys())
+    # First pass: accounts that directly pass the filter
+    directly_included = set()
+    for account in all_accounts:
+        if filter_mode == FILTER_NON_ZERO:
+            bal = balances.get(account.id)
+            comp = compare_balances.get(account.id) if compare_balances else None
+            if (bal and bal['net'] != ZERO) or (comp and comp['net'] != ZERO):
+                directly_included.add(account.id)
+        elif filter_mode == FILTER_WITH_TRANSACTIONS:
+            if account.id in accounts_with_txn:
+                directly_included.add(account.id)
 
-    # Derive L2 and L1 paths from L3 paths
-    # e.g., L3 path "1.10.1010" → L2 "1.10" → L1 "1"
-    needed_l2_paths = set()
-    needed_l1_paths = set()
-    for l3_path in needed_l3_paths:
-        parts = l3_path.split('.')
-        needed_l1_paths.add(parts[0])
-        needed_l2_paths.add(f"{parts[0]}.{parts[1]}")
+    # Second pass: include parent chain for every directly included account
+    account_map = {a.id: a for a in all_accounts}
+    included = set(directly_included)
 
-    # ── Build tree ──
+    for account_id in directly_included:
+        current = account_map.get(account_id)
+        while current and current.parent_account_id:
+            included.add(current.parent_account_id)
+            current = account_map.get(current.parent_account_id)
+
+    return included
+
+
+# ══════════════════════════════════════════════════
+# CLASSIFICATION TREE BUILDER (L1 > L2 > L3)
+# ══════════════════════════════════════════════════
+
+def _build_classification_tree(root_accounts_by_l3, children_by_parent,
+                                class_map, balances, compare_balances,
+                                included_ids):
+    """
+    Build the top-level classification tree (L1 > L2 > L3), then
+    attach the account tree under each L3.
+
+    All subtotals are computed as Decimals during construction,
+    then converted to strings at the very end via _stringify_tree().
+    """
+    has_compare = compare_balances is not None
+
+    # Find which L3 classifications have included accounts
+    needed_l3_ids = set()
+    for l3_id, root_accts in root_accounts_by_l3.items():
+        for acct in root_accts:
+            if acct.id in included_ids or _has_included_descendant(
+                acct.id, included_ids, children_by_parent
+            ):
+                needed_l3_ids.add(l3_id)
+                break
+
+    # Map L3 IDs to paths
+    l3_paths = {}
+    for path, cls in class_map.items():
+        if cls.id in needed_l3_ids:
+            l3_paths[cls.id] = path
+
+    needed_l3_path_set = set(l3_paths.values())
+    needed_l2 = {'.'.join(p.split('.')[:2]) for p in needed_l3_path_set}
+    needed_l1 = {p.split('.')[0] for p in needed_l3_path_set}
+
     tree = []
 
-    # Sort L1 paths for consistent ordering (1, 2, 3, 4, 5)
-    for l1_path in sorted(needed_l1_paths):
-        l1_class = class_map.get(l1_path)
-        if not l1_class:
+    for l1_path in sorted(needed_l1):
+        l1_cls = class_map.get(l1_path)
+        if not l1_cls:
             continue
+        l1 = {'name': l1_cls.name, 'classification_path': l1_path,
+               'subtotal_debit': ZERO, 'subtotal_credit': ZERO, 'children': []}
+        if has_compare:
+            l1['compare_subtotal_debit'] = ZERO
+            l1['compare_subtotal_credit'] = ZERO
 
-        l1_node = {
-            'name': l1_class.name,
-            'classification_path': l1_path,
-            'subtotal_debit': Decimal('0.00'),
-            'subtotal_credit': Decimal('0.00'),
-            'compare_subtotal_debit': Decimal('0.00') if compare_balances else None,
-            'compare_subtotal_credit': Decimal('0.00') if compare_balances else None,
-            'children': [],
-        }
-
-        # L2 children under this L1
-        for l2_path in sorted(p for p in needed_l2_paths if p.startswith(l1_path + '.')):
-            l2_class = class_map.get(l2_path)
-            if not l2_class:
+        for l2_path in sorted(p for p in needed_l2 if p.startswith(l1_path + '.')):
+            l2_cls = class_map.get(l2_path)
+            if not l2_cls:
                 continue
+            l2 = {'name': l2_cls.name, 'classification_path': l2_path,
+                   'subtotal_debit': ZERO, 'subtotal_credit': ZERO, 'children': []}
+            if has_compare:
+                l2['compare_subtotal_debit'] = ZERO
+                l2['compare_subtotal_credit'] = ZERO
 
-            l2_node = {
-                'name': l2_class.name,
-                'classification_path': l2_path,
-                'subtotal_debit': Decimal('0.00'),
-                'subtotal_credit': Decimal('0.00'),
-                'compare_subtotal_debit': Decimal('0.00') if compare_balances else None,
-                'compare_subtotal_credit': Decimal('0.00') if compare_balances else None,
-                'children': [],
-            }
+            for l3_path in sorted(p for p in needed_l3_path_set if p.startswith(l2_path + '.')):
+                l3_cls = class_map.get(l3_path)
+                if not l3_cls:
+                    continue
+                l3 = {'name': l3_cls.name, 'classification_path': l3_path,
+                       'subtotal_debit': ZERO, 'subtotal_credit': ZERO, 'accounts': []}
+                if has_compare:
+                    l3['compare_subtotal_debit'] = ZERO
+                    l3['compare_subtotal_credit'] = ZERO
 
-            # L3 children under this L2
-            for l3_path in sorted(p for p in needed_l3_paths if p.startswith(l2_path + '.')):
-                l3_class = class_map.get(l3_path)
-                if not l3_class:
+                # Build account trees under this L3
+                for root_acct in root_accounts_by_l3.get(l3_cls.id, []):
+                    acct_node = _build_account_node(
+                        root_acct, children_by_parent, balances,
+                        compare_balances, included_ids,
+                    )
+                    if acct_node is None:
+                        continue
+                    l3['accounts'].append(acct_node)
+                    # Roll up to L3 subtotal (use the account's subtotal which
+                    # already includes all descendants)
+                    l3['subtotal_debit'] += acct_node['subtotal_debit']
+                    l3['subtotal_credit'] += acct_node['subtotal_credit']
+                    if has_compare:
+                        l3['compare_subtotal_debit'] += acct_node['compare_subtotal_debit']
+                        l3['compare_subtotal_credit'] += acct_node['compare_subtotal_credit']
+
+                if not l3['accounts']:
                     continue
 
-                l3_node = {
-                    'name': l3_class.name,
-                    'classification_path': l3_path,
-                    'subtotal_debit': Decimal('0.00'),
-                    'subtotal_credit': Decimal('0.00'),
-                    'compare_subtotal_debit': Decimal('0.00') if compare_balances else None,
-                    'compare_subtotal_credit': Decimal('0.00') if compare_balances else None,
-                    'accounts': [],
-                }
+                l2['subtotal_debit'] += l3['subtotal_debit']
+                l2['subtotal_credit'] += l3['subtotal_credit']
+                if has_compare:
+                    l2['compare_subtotal_debit'] += l3['compare_subtotal_debit']
+                    l2['compare_subtotal_credit'] += l3['compare_subtotal_credit']
 
-                # Accounts under this L3
-                for account in accounts_by_l3.get(l3_path, []):
-                    acct_data = _format_account_row(
-                        account, balances, compare_balances,
-                    )
-                    l3_node['accounts'].append(acct_data)
+                l2['children'].append(l3)
 
-                    # Accumulate subtotals upward (L3 → L2 → L1)
-                    _accumulate_subtotals(l3_node, acct_data)
+            if not l2['children']:
+                continue
 
-                # Propagate L3 subtotals up to L2
-                _propagate_subtotals(l2_node, l3_node)
+            l1['subtotal_debit'] += l2['subtotal_debit']
+            l1['subtotal_credit'] += l2['subtotal_credit']
+            if has_compare:
+                l1['compare_subtotal_debit'] += l2['compare_subtotal_debit']
+                l1['compare_subtotal_credit'] += l2['compare_subtotal_credit']
 
-                l3_node['subtotal_debit'] = str(l3_node['subtotal_debit'])
-                l3_node['subtotal_credit'] = str(l3_node['subtotal_credit'])
-                if compare_balances:
-                    l3_node['compare_subtotal_debit'] = str(l3_node['compare_subtotal_debit'])
-                    l3_node['compare_subtotal_credit'] = str(l3_node['compare_subtotal_credit'])
+            l1['children'].append(l2)
 
-                l2_node['children'].append(l3_node)
+        if not l1['children']:
+            continue
 
-            l2_node['subtotal_debit'] = str(l2_node['subtotal_debit'])
-            l2_node['subtotal_credit'] = str(l2_node['subtotal_credit'])
-            if compare_balances:
-                l2_node['compare_subtotal_debit'] = str(l2_node['compare_subtotal_debit'])
-                l2_node['compare_subtotal_credit'] = str(l2_node['compare_subtotal_credit'])
+        tree.append(l1)
 
-            l1_node['children'].append(l2_node)
-
-            # Propagate L2 subtotals up to L1
-            _propagate_subtotals(l1_node, l2_node, from_str=True)
-
-        l1_node['subtotal_debit'] = str(l1_node['subtotal_debit'])
-        l1_node['subtotal_credit'] = str(l1_node['subtotal_credit'])
-        if compare_balances:
-            l1_node['compare_subtotal_debit'] = str(l1_node['compare_subtotal_debit'])
-            l1_node['compare_subtotal_credit'] = str(l1_node['compare_subtotal_credit'])
-
-        tree.append(l1_node)
+    # ── Final pass: convert all Decimal values to strings ──
+    _stringify_tree(tree, has_compare)
 
     return tree
 
 
-def _format_account_row(account, balances, compare_balances):
+def _stringify_tree(nodes, has_compare):
     """
-    Format a single account's data for the report.
+    Recursively convert all Decimal subtotals in the tree to strings.
+    Called once after the entire tree is built.
+    """
+    for node in nodes:
+        # Classification nodes
+        if 'subtotal_debit' in node and isinstance(node['subtotal_debit'], Decimal):
+            node['subtotal_debit'] = str(node['subtotal_debit'])
+            node['subtotal_credit'] = str(node['subtotal_credit'])
+            if has_compare and 'compare_subtotal_debit' in node:
+                node['compare_subtotal_debit'] = str(node['compare_subtotal_debit'])
+                node['compare_subtotal_credit'] = str(node['compare_subtotal_credit'])
 
-    Returns dict with account info, balance columns, and comparison data.
+        # Recurse into children (classification) or accounts
+        if 'children' in node:
+            _stringify_tree(node['children'], has_compare)
+        if 'accounts' in node:
+            _stringify_accounts(node['accounts'], has_compare)
+
+
+def _stringify_accounts(accounts, has_compare):
+    """Recursively convert Decimal values in account nodes to strings."""
+    for acct in accounts:
+        if isinstance(acct.get('subtotal_debit'), Decimal):
+            acct['subtotal_debit'] = str(acct['subtotal_debit'])
+            acct['subtotal_credit'] = str(acct['subtotal_credit'])
+        if has_compare:
+            if isinstance(acct.get('compare_subtotal_debit'), Decimal):
+                acct['compare_subtotal_debit'] = str(acct['compare_subtotal_debit'])
+                acct['compare_subtotal_credit'] = str(acct['compare_subtotal_credit'])
+        # Recurse into children accounts
+        if acct.get('children'):
+            _stringify_accounts(acct['children'], has_compare)
+
+
+# ══════════════════════════════════════════════════
+# ACCOUNT NODE BUILDER (INFINITE DEPTH)
+# ══════════════════════════════════════════════════
+
+def _build_account_node(account, children_by_parent, balances,
+                         compare_balances, included_ids):
     """
+    Recursively build an account node with nested children.
+
+    Returns dict with:
+        - own_debit_balance / own_credit_balance: this account only
+        - subtotal_debit / subtotal_credit: own + all descendants (Decimal)
+        - children: list of child nodes (recursive)
+
+    Returns None if this account and all descendants are excluded.
+    """
+    # Skip if neither this account nor any descendant is included
+    self_included = account.id in included_ids
+    has_child = _has_included_descendant(account.id, included_ids, children_by_parent)
+    if not self_included and not has_child:
+        return None
+
+    has_compare = compare_balances is not None
+
+    # ── Own balance ──
     bal = balances.get(account.id)
-    net = bal['net'] if bal else Decimal('0.00')
+    net = bal['net'] if bal else ZERO
+    own_debit = net if net > 0 else None
+    own_credit = abs(net) if net < 0 else None
 
-    # Determine debit/credit column placement
-    debit_balance = net if net > 0 else None
-    credit_balance = abs(net) if net < 0 else None
+    is_unusual = (
+        (account.normal_balance == 'DEBIT' and net < 0) or
+        (account.normal_balance == 'CREDIT' and net > 0)
+    )
 
-    # Flag unusual balances (balance is opposite of normal_balance)
-    is_unusual = False
-    if account.normal_balance == 'DEBIT' and net < 0:
-        is_unusual = True
-    elif account.normal_balance == 'CREDIT' and net > 0:
-        is_unusual = True
-
-    row = {
+    node = {
         'account_id': str(account.id),
         'code': account.code,
         'name': account.name,
         'normal_balance': account.normal_balance,
         'currency': account.currency,
+        'is_active': account.is_active,
         'is_sub_account': account.is_sub_account,
-        'debit_balance': str(debit_balance) if debit_balance else None,
-        'credit_balance': str(credit_balance) if credit_balance else None,
         'is_unusual_balance': is_unusual,
+        'own_debit_balance': str(own_debit) if own_debit else None,
+        'own_credit_balance': str(own_credit) if own_credit else None,
+        # Subtotals as Decimals (converted to strings by _stringify later)
+        'subtotal_debit': own_debit or ZERO,
+        'subtotal_credit': own_credit or ZERO,
+        'children': [],
     }
 
-    # ── Comparison columns ──
-    if compare_balances is not None:
-        comp_bal = compare_balances.get(account.id)
-        comp_net = comp_bal['net'] if comp_bal else Decimal('0.00')
-
+    # ── Comparison own balance ──
+    if has_compare:
+        comp = compare_balances.get(account.id)
+        comp_net = comp['net'] if comp else ZERO
         comp_debit = comp_net if comp_net > 0 else None
         comp_credit = abs(comp_net) if comp_net < 0 else None
 
-        row['compare_debit_balance'] = str(comp_debit) if comp_debit else None
-        row['compare_credit_balance'] = str(comp_credit) if comp_credit else None
+        node['compare_own_debit_balance'] = str(comp_debit) if comp_debit else None
+        node['compare_own_credit_balance'] = str(comp_credit) if comp_credit else None
+        node['compare_subtotal_debit'] = comp_debit or ZERO
+        node['compare_subtotal_credit'] = comp_credit or ZERO
 
-        # Change calculation
         change = net - comp_net
-        row['change_amount'] = str(change)
-        if comp_net != 0:
-            change_pct = ((net - comp_net) / abs(comp_net) * 100).quantize(
-                Decimal('0.01'),
-            )
-            row['change_percentage'] = str(change_pct)
-        else:
-            row['change_percentage'] = None
+        node['change_amount'] = str(change)
+        node['change_percentage'] = (
+            str(((net - comp_net) / abs(comp_net) * 100).quantize(Decimal('0.01')))
+            if comp_net != ZERO else None
+        )
     else:
-        row['compare_debit_balance'] = None
-        row['compare_credit_balance'] = None
-        row['change_amount'] = None
-        row['change_percentage'] = None
+        node['compare_own_debit_balance'] = None
+        node['compare_own_credit_balance'] = None
+        node['compare_subtotal_debit'] = ZERO
+        node['compare_subtotal_credit'] = ZERO
+        node['change_amount'] = None
+        node['change_percentage'] = None
 
-    return row
+    # ── Recursively build children ──
+    for child in children_by_parent.get(account.id, []):
+        child_node = _build_account_node(
+            child, children_by_parent, balances,
+            compare_balances, included_ids,
+        )
+        if child_node is None:
+            continue
+        node['children'].append(child_node)
+        # Roll up child subtotals (still Decimals at this point)
+        node['subtotal_debit'] += child_node['subtotal_debit']
+        node['subtotal_credit'] += child_node['subtotal_credit']
+        if has_compare:
+            node['compare_subtotal_debit'] += child_node['compare_subtotal_debit']
+            node['compare_subtotal_credit'] += child_node['compare_subtotal_credit']
 
-
-def _accumulate_subtotals(node, acct_data):
-    """Add an account's balance to the node's running subtotal."""
-    if acct_data['debit_balance']:
-        node['subtotal_debit'] += Decimal(acct_data['debit_balance'])
-    if acct_data['credit_balance']:
-        node['subtotal_credit'] += Decimal(acct_data['credit_balance'])
-
-    if node.get('compare_subtotal_debit') is not None:
-        if acct_data.get('compare_debit_balance'):
-            node['compare_subtotal_debit'] += Decimal(acct_data['compare_debit_balance'])
-        if acct_data.get('compare_credit_balance'):
-            node['compare_subtotal_credit'] += Decimal(acct_data['compare_credit_balance'])
-
-
-def _propagate_subtotals(parent, child, from_str=False):
-    """Propagate a child node's subtotals up to its parent."""
-    if from_str:
-        parent['subtotal_debit'] += Decimal(child['subtotal_debit'])
-        parent['subtotal_credit'] += Decimal(child['subtotal_credit'])
-        if parent.get('compare_subtotal_debit') is not None and child.get('compare_subtotal_debit'):
-            parent['compare_subtotal_debit'] += Decimal(child['compare_subtotal_debit'])
-            parent['compare_subtotal_credit'] += Decimal(child['compare_subtotal_credit'])
-    else:
-        parent['subtotal_debit'] += child['subtotal_debit']
-        parent['subtotal_credit'] += child['subtotal_credit']
-        if parent.get('compare_subtotal_debit') is not None and child.get('compare_subtotal_debit') is not None:
-            parent['compare_subtotal_debit'] += child['compare_subtotal_debit']
-            parent['compare_subtotal_credit'] += child['compare_subtotal_credit']
+    return node
 
 
-def _build_flat_list(accounts, balances, compare_balances):
+def _has_included_descendant(account_id, included_ids, children_by_parent):
+    """Check if any descendant of this account is in the included set."""
+    for child in children_by_parent.get(account_id, []):
+        if child.id in included_ids:
+            return True
+        if _has_included_descendant(child.id, included_ids, children_by_parent):
+            return True
+    return False
+
+
+# ══════════════════════════════════════════════════
+# FLAT LIST BUILDER
+# ══════════════════════════════════════════════════
+
+def _build_flat_list(all_accounts, balances, compare_balances,
+                      included_ids, children_by_parent):
     """
-    Build a flat list of accounts (no grouping) for ?format=flat.
-    Each row includes the account's L1/L2/L3 classification names
-    so the frontend can group if needed.
+    Build a flat list for ?layout=flat.
+
+    Each row includes depth, parent_account_id, and has_children
+    so the frontend can reconstruct the tree if needed.
     """
+    has_compare = compare_balances is not None
     flat = []
-    for account in accounts:
-        row = _format_account_row(account, balances, compare_balances)
 
-        # Add classification context for frontend grouping
-        classification_path = account.classification.internal_path
-        parts = classification_path.split('.')
+    for account in all_accounts:
+        if account.id not in included_ids:
+            continue
 
-        row['classification_l1'] = parts[0] if len(parts) > 0 else None
-        row['classification_l2'] = '.'.join(parts[:2]) if len(parts) > 1 else None
-        row['classification_l3'] = classification_path
-        row['classification_name'] = account.classification.name
+        bal = balances.get(account.id)
+        net = bal['net'] if bal else ZERO
+        own_debit = net if net > 0 else None
+        own_credit = abs(net) if net < 0 else None
+
+        is_unusual = (
+            (account.normal_balance == 'DEBIT' and net < 0) or
+            (account.normal_balance == 'CREDIT' and net > 0)
+        )
+
+        # Depth: L4=0, L5=1, L6=2, ...
+        depth = max(0, len(account.internal_path.split('.')) - 4)
+
+        row = {
+            'account_id': str(account.id),
+            'code': account.code,
+            'name': account.name,
+            'normal_balance': account.normal_balance,
+            'currency': account.currency,
+            'is_active': account.is_active,
+            'is_sub_account': account.is_sub_account,
+            'is_unusual_balance': is_unusual,
+            'depth': depth,
+            'parent_account_id': str(account.parent_account_id) if account.parent_account_id else None,
+            'has_children': account.id in children_by_parent,
+            'classification_path': account.classification.internal_path,
+            'classification_name': account.classification.name,
+            'debit_balance': str(own_debit) if own_debit else None,
+            'credit_balance': str(own_credit) if own_credit else None,
+        }
+
+        if has_compare:
+            comp = compare_balances.get(account.id)
+            comp_net = comp['net'] if comp else ZERO
+            row['compare_debit_balance'] = str(comp_net) if comp_net > 0 else None
+            row['compare_credit_balance'] = str(abs(comp_net)) if comp_net < 0 else None
+            change = net - comp_net
+            row['change_amount'] = str(change)
+            row['change_percentage'] = (
+                str(((net - comp_net) / abs(comp_net) * 100).quantize(Decimal('0.01')))
+                if comp_net != ZERO else None
+            )
+        else:
+            row['compare_debit_balance'] = None
+            row['compare_credit_balance'] = None
+            row['change_amount'] = None
+            row['change_percentage'] = None
 
         flat.append(row)
 
