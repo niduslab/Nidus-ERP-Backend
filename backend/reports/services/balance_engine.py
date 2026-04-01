@@ -1,4 +1,5 @@
 # backend/reports/services/balance_engine.py
+
 """
 Shared balance calculation engine for all financial reports.
 
@@ -55,6 +56,11 @@ def get_account_balances(company, as_of_date):
             'net': Decimal,   # positive = debit balance, negative = credit balance
         }}
 
+    NOTE:
+        This queries LedgerEntry which only contains POSTED entries.
+        DRAFT journals have no ledger entries and are automatically
+        excluded. Inactive accounts ARE included — they may hold
+        balances from before they were deactivated.
     """
     # ── Single aggregation query ──
     aggregated = (
@@ -117,7 +123,7 @@ def get_accounts_with_transactions(company, as_of_date):
 
 
 # ══════════════════════════════════════════════════
-# PERIOD-BASED FUNCTIONS 
+# PERIOD-BASED FUNCTIONS (Added for Income Statement)
 # ══════════════════════════════════════════════════
 
 def get_period_balances(company, from_date, to_date):
@@ -197,7 +203,7 @@ def get_accounts_with_transactions_in_period(company, from_date, to_date):
     """
     Return the set of account IDs that have at least one ledger entry
     within [from_date, to_date].
- 
+
     Period-scoped counterpart of get_accounts_with_transactions().
     Used by Income Statement's 'with_transactions' filter mode.
     """
@@ -211,4 +217,3 @@ def get_accounts_with_transactions_in_period(company, from_date, to_date):
         .values_list('ledger_account_id', flat=True)
         .distinct()
     )
- 

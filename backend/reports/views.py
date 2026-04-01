@@ -1,4 +1,5 @@
 # backend/reports/views.py
+
 """
 API views for financial reports.
 
@@ -10,6 +11,10 @@ All report views follow the same pattern:
 
 PERMISSIONS:
     All roles can view reports. Reports are read-only.
+
+NOTE ON QUERY PARAMETERS:
+    We use 'layout' instead of 'format' because DRF reserves
+    the 'format' parameter for content negotiation.
 """
 
 from datetime import date, datetime
@@ -489,95 +494,5 @@ class IncomeStatementView(APIView):
             data['change_revenue_pct'] = report['change_revenue_pct']
             data['change_expenses_pct'] = report['change_expenses_pct']
             data['change_net_income_pct'] = report['change_net_income_pct']
-
-        return Response({'success': True, 'data': data}, status=status.HTTP_200_OK)
-    """
-    GET /api/companies/{company_id}/reports/balance-sheet/
-
-    Generates a Balance Sheet (Statement of Financial Position).
-    Shows Assets = Liabilities + Equity at a specific date.
-
-    Automatically calculates retained earnings from Income − Expense
-    accounts. Supports both auto-calculation and manual closing journals
-    without double-counting.
-
-    Query Parameters:
-        as_of_date      YYYY-MM-DD (default: today)
-        filter_mode     'all' | 'with_transactions' | 'non_zero' (default)
-        compare_date    YYYY-MM-DD (optional comparison column)
-    """
-
-    def get(self, request, company_id):
-        company, error = _get_company_and_check_access(request, company_id)
-        if error:
-            return error
-
-        # ── Parse as_of_date ──
-        as_of_date_str = request.query_params.get('as_of_date')
-        if as_of_date_str:
-            as_of_date, err = _parse_date_param(as_of_date_str, 'as_of_date')
-            if err:
-                return Response({'success': False, 'message': err}, status=status.HTTP_400_BAD_REQUEST)
-        else:
-            as_of_date = date.today()
-
-        # ── Parse filter_mode ──
-        filter_mode = request.query_params.get('filter_mode', FILTER_NON_ZERO)
-        filter_mode, err = _validate_filter_mode(filter_mode)
-        if err:
-            return err
-
-        # ── Parse compare_date ──
-        compare_date = None
-        compare_str = request.query_params.get('compare_date')
-        if compare_str:
-            compare_date, err = _parse_date_param(compare_str, 'compare_date')
-            if err:
-                return Response({'success': False, 'message': err}, status=status.HTTP_400_BAD_REQUEST)
-
-        # ── Generate report ──
-        report = generate_balance_sheet(
-            company=company,
-            as_of_date=as_of_date,
-            filter_mode=filter_mode,
-            compare_date=compare_date,
-        )
-
-        # ── Build response ──
-        data = {
-            'report_title': report['report_title'],
-            'company_name': report['company_name'],
-            'base_currency': report['base_currency'],
-            'as_of_date': report['as_of_date'],
-            'compare_date': report['compare_date'],
-            'filter_mode': report['filter_mode'],
-            'account_count': report['account_count'],
-            'generated_at': datetime.now().isoformat(),
-
-            # Three sections with account trees
-            'assets': report['assets'],
-            'liabilities': report['liabilities'],
-            'equity': report['equity'],
-
-            # Auto-calculated earnings
-            'retained_earnings_auto': report['retained_earnings_auto'],
-
-            # Totals
-            'total_assets': report['total_assets'],
-            'total_liabilities': report['total_liabilities'],
-            'total_equity_accounts': report['total_equity_accounts'],
-            'total_equity': report['total_equity'],
-            'total_liabilities_and_equity': report['total_liabilities_and_equity'],
-
-            # Equation check
-            'is_balanced': report['is_balanced'],
-        }
-
-        # Add comparison totals if applicable
-        if compare_date:
-            data['compare_total_assets'] = report['compare_total_assets']
-            data['compare_total_liabilities_and_equity'] = report['compare_total_liabilities_and_equity']
-            data['change_total_assets'] = report['change_total_assets']
-            data['change_total_le'] = report['change_total_le']
 
         return Response({'success': True, 'data': data}, status=status.HTTP_200_OK)
