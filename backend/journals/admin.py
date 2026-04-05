@@ -1,11 +1,12 @@
 # backend/journals/admin.py
 
-from django.contrib import admin
+from django.contrib import admin, messages
 from django.urls import reverse
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 
 from .models import ManualJournal, ManualJournalLine, LedgerEntry
+from .services import post_journal, void_journal
 
 
 class ManualJournalLineInline(admin.TabularInline):
@@ -31,6 +32,115 @@ class LedgerEntryInlineForJournal(admin.TabularInline):
     # via a custom method on the ManualJournalAdmin instead.
 
 
+# ══════════════════════════════════════════════════
+# ADMIN ACTIONS — BULK POST & BULK VOID
+# ══════════════════════════════════════════════════
+
+@admin.action(description='Post selected DRAFT journals')
+def bulk_post_journals(modeladmin, request, queryset):
+    """
+    Admin action: Select one or more DRAFT journals and post them.
+
+    Calls the same post_journal() service used by the API endpoint,
+    so all validation (lock date, balance check) is enforced.
+    Journals that are not DRAFT are skipped with a warning.
+
+    Uses request.user as the posted_by user for audit trail.
+    """
+    posted_count = 0
+    skipped_count = 0
+    error_messages = []
+
+    for journal in queryset.select_related('company'):
+        # ── Skip non-DRAFT journals ──
+        if journal.status != 'DRAFT':
+            skipped_count += 1
+            error_messages.append(
+                f'{journal.entry_number}: Skipped — status is '
+                f'{journal.get_status_display()}, not DRAFT.'
+            )
+            continue
+
+        # ── Attempt to post via the service layer ──
+        try:
+            post_journal(journal, posted_by=request.user)
+            posted_count += 1
+        except ValueError as e:
+            skipped_count += 1
+            error_messages.append(
+                f'{journal.entry_number}: Failed — {str(e)}'
+            )
+
+    # ── Report results to admin ──
+    if posted_count:
+        modeladmin.message_user(
+            request,
+            f'Successfully posted {posted_count} journal(s).',
+            messages.SUCCESS,
+        )
+    if skipped_count:
+        # Show each skip/error reason as a separate warning
+        for msg in error_messages:
+            modeladmin.message_user(request, msg, messages.WARNING)
+
+
+@admin.action(description='Void selected POSTED journals (create reversals)')
+def bulk_void_journals(modeladmin, request, queryset):
+    """
+    Admin action: Select one or more POSTED journals and void them.
+
+    Calls the same void_journal() service used by the API endpoint,
+    so all validation (lock date, already voided) is enforced.
+    Journals that are not POSTED are skipped with a warning.
+
+    The void_date defaults to today (same as the API behaviour).
+    Uses request.user as the voided_by user for audit trail.
+    """
+    voided_count = 0
+    skipped_count = 0
+    error_messages = []
+
+    for journal in queryset.select_related('company'):
+        # ── Skip non-POSTED journals ──
+        if journal.status != 'POSTED':
+            skipped_count += 1
+            error_messages.append(
+                f'{journal.entry_number}: Skipped — status is '
+                f'{journal.get_status_display()}, not POSTED.'
+            )
+            continue
+
+        # ── Attempt to void via the service layer ──
+        try:
+            reversal = void_journal(
+                journal,
+                voided_by=request.user,
+                void_date=None,  # Defaults to today inside the service
+            )
+            voided_count += 1
+        except ValueError as e:
+            skipped_count += 1
+            error_messages.append(
+                f'{journal.entry_number}: Failed — {str(e)}'
+            )
+
+    # ── Report results to admin ──
+    if voided_count:
+        modeladmin.message_user(
+            request,
+            f'Successfully voided {voided_count} journal(s). '
+            f'Reversing entries have been created.',
+            messages.SUCCESS,
+        )
+    if skipped_count:
+        for msg in error_messages:
+            modeladmin.message_user(request, msg, messages.WARNING)
+
+
+# ══════════════════════════════════════════════════
+# MANUAL JOURNAL ADMIN
+# ══════════════════════════════════════════════════
+
 @admin.register(ManualJournal)
 class ManualJournalAdmin(admin.ModelAdmin):
     list_display = (
@@ -51,6 +161,9 @@ class ManualJournalAdmin(admin.ModelAdmin):
         'ledger_entries_summary',
     )
     inlines = [ManualJournalLineInline]
+
+    # ── Register the bulk actions ──
+    actions = [bulk_post_journals, bulk_void_journals]
 
     # ── Prevent creating journals from admin ──
     def has_add_permission(self, request):

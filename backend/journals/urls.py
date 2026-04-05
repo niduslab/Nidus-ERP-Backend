@@ -42,15 +42,14 @@ urlpatterns = [
         name='journal-void',
     ),
 
-    # ── Account Ledger & Balance ──
-    path(
-        'accounts/<uuid:account_id>/ledger/',
-        views.AccountLedgerView.as_view(),
-        name='account-ledger',
-    ),
+    # ── Account Balance (lightweight utility, stays here) ──
     path(
         'accounts/<uuid:account_id>/balance/',
         views.AccountBalanceView.as_view(),
         name='account-balance',
     ),
+
+    # NOTE: Account Ledger has been moved to reports app as
+    # "Account Transactions" at:
+    #   /api/companies/{id}/reports/account-transactions/?account_id={uuid}
 ]

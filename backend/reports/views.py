@@ -18,6 +18,7 @@ NOTE ON QUERY PARAMETERS:
 """
 
 from datetime import date, datetime
+from uuid import UUID
 
 from rest_framework import status
 from rest_framework.response import Response
@@ -32,6 +33,11 @@ from .services.trial_balance import (
 )
 from .services.balance_sheet import generate_balance_sheet
 from .services.income_statement import generate_income_statement
+from .services.general_ledger import generate_general_ledger
+from .services.account_transactions import generate_account_transactions
+
+from chartofaccounts.models import Account
+from journals.models import JournalTypeChoices
 
 
 # ══════════════════════════════════════════════════
@@ -494,5 +500,348 @@ class IncomeStatementView(APIView):
             data['change_revenue_pct'] = report['change_revenue_pct']
             data['change_expenses_pct'] = report['change_expenses_pct']
             data['change_net_income_pct'] = report['change_net_income_pct']
+
+        return Response({'success': True, 'data': data}, status=status.HTTP_200_OK)
+
+
+# ══════════════════════════════════════════════════
+# GENERAL LEDGER
+# ══════════════════════════════════════════════════
+
+# Valid journal type values for the filter parameter
+VALID_JOURNAL_TYPES = {choice.value for choice in JournalTypeChoices}
+
+
+class GeneralLedgerView(APIView):
+    """
+    GET /api/companies/{company_id}/reports/general-ledger/
+
+    Generates a detailed General Ledger showing every transaction
+    per account with opening balance, running balance, and closing
+    balance. This is the transaction-level detail report.
+
+    Unlike the summary reports (Trial Balance, Balance Sheet, Income
+    Statement), this shows individual LedgerEntry rows.
+
+    Query Parameters:
+        from_date       YYYY-MM-DD (default: fiscal year start)
+        to_date         YYYY-MM-DD (default: today)
+        account_id      UUID (optional — filter to a single account)
+        journal_type    str (optional — filter by type: SALES, PURCHASE, etc.)
+
+    PAGINATION:
+        Paginated at the account level — each page contains N complete
+        accounts with all their transactions. Default page_size=20 accounts.
+        Use ?page=2&page_size=10 to control.
+    """
+
+    def get(self, request, company_id):
+        company, error = _get_company_and_check_access(request, company_id)
+        if error:
+            return error
+
+        # ── Parse to_date (parse first — needed for from_date default) ──
+        to_date_str = request.query_params.get('to_date')
+        if to_date_str:
+            to_date, err = _parse_date_param(to_date_str, 'to_date')
+            if err:
+                return Response(
+                    {'success': False, 'message': err},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            to_date = date.today()
+
+        # ── Parse from_date (default: fiscal year start of to_date) ──
+        from_date_str = request.query_params.get('from_date')
+        if from_date_str:
+            from_date, err = _parse_date_param(from_date_str, 'from_date')
+            if err:
+                return Response(
+                    {'success': False, 'message': err},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            from_date = _get_fiscal_year_start(company, to_date)
+
+        # ── Validate date range ──
+        if from_date > to_date:
+            return Response(
+                {
+                    'success': False,
+                    'message': (
+                        f'from_date ({from_date}) cannot be after '
+                        f'to_date ({to_date}).'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Parse optional account_id filter ──
+        account_id = None
+        account_id_str = request.query_params.get('account_id')
+        if account_id_str:
+            try:
+                account_id = UUID(account_id_str)
+            except (ValueError, AttributeError):
+                return Response(
+                    {
+                        'success': False,
+                        'message': (
+                            f'Invalid account_id: "{account_id_str}". '
+                            f'Must be a valid UUID.'
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # ── Parse optional journal_type filter ──
+        journal_type = None
+        journal_type_str = request.query_params.get('journal_type')
+        if journal_type_str:
+            journal_type = journal_type_str.upper()
+            if journal_type not in VALID_JOURNAL_TYPES:
+                return Response(
+                    {
+                        'success': False,
+                        'message': (
+                            f'Invalid journal_type: "{journal_type_str}". '
+                            f'Valid options: {", ".join(sorted(VALID_JOURNAL_TYPES))}.'
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # ── Generate full report ──
+        report = generate_general_ledger(
+            company=company,
+            from_date=from_date,
+            to_date=to_date,
+            account_id=account_id,
+            journal_type=journal_type,
+        )
+
+        # ── Paginate at the account level ──
+        # Each page contains N complete accounts with all their transactions.
+        all_accounts = report['accounts']
+        page_size = min(
+            int(request.query_params.get('page_size', 20)),
+            100,   # Hard cap — matches StandardResultsSetPagination.max_page_size
+        )
+        page_num = int(request.query_params.get('page', 1))
+        total_accounts = len(all_accounts)
+        total_pages = max(1, -(-total_accounts // page_size))  # Ceiling division
+
+        # Validate page number
+        if page_num < 1 or (page_num > total_pages and total_accounts > 0):
+            return Response(
+                {
+                    'success': False,
+                    'message': (
+                        f'Invalid page: {page_num}. '
+                        f'Total pages: {total_pages}.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Slice the accounts for this page
+        start_idx = (page_num - 1) * page_size
+        end_idx = start_idx + page_size
+        page_accounts = all_accounts[start_idx:end_idx]
+
+        # Count transactions on this page only
+        page_transaction_count = sum(
+            a['transaction_count'] for a in page_accounts
+        )
+
+        # ── Build response ──
+        data = {
+            'report_title': report['report_title'],
+            'company_name': report['company_name'],
+            'base_currency': report['base_currency'],
+            'from_date': report['from_date'],
+            'to_date': report['to_date'],
+            'filters': report['filters'],
+            'generated_at': datetime.now().isoformat(),
+
+            # Grand totals (across ALL accounts, not just this page)
+            'account_count': report['account_count'],
+            'transaction_count': report['transaction_count'],
+            'grand_total_debit': report['grand_total_debit'],
+            'grand_total_credit': report['grand_total_credit'],
+
+            # Paginated account data
+            'accounts': page_accounts,
+        }
+
+        return Response(
+            {
+                'success': True,
+                'data': data,
+                'pagination': {
+                    'total_count': total_accounts,
+                    'page': page_num,
+                    'page_size': page_size,
+                    'total_pages': total_pages,
+                    'page_transaction_count': page_transaction_count,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+# ══════════════════════════════════════════════════
+# ACCOUNT TRANSACTIONS (Drill-Down Report)
+# ══════════════════════════════════════════════════
+
+class AccountTransactionsView(APIView):
+    """
+    GET /api/companies/{company_id}/reports/account-transactions/
+
+    Generates a detailed Account Transactions report for a single
+    account. This is the drill-down view — when a user clicks an
+    account name in Trial Balance, Balance Sheet, P&L, or General
+    Ledger, they land here.
+
+    Shows every ledger entry with opening balance, running balance,
+    closing balance, and source journal references (entry_number,
+    description, reference).
+
+    NO PAGINATION — all entries in the date range are returned.
+    Date range filtering naturally bounds the data volume.
+
+    Query Parameters:
+        account_id      UUID (REQUIRED — the account to show)
+        from_date       YYYY-MM-DD (default: fiscal year start)
+        to_date         YYYY-MM-DD (default: today)
+    """
+
+    def get(self, request, company_id):
+        company, error = _get_company_and_check_access(request, company_id)
+        if error:
+            return error
+
+        # ── Parse account_id (REQUIRED) ──
+        account_id_str = request.query_params.get('account_id')
+        if not account_id_str:
+            return Response(
+                {
+                    'success': False,
+                    'message': (
+                        'account_id is required. '
+                        'Provide the UUID of the account to view.'
+                    ), 
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            account_id = UUID(account_id_str)
+        except (ValueError, AttributeError):
+            return Response(
+                {
+                    'success': False,
+                    'message': (
+                        f'Invalid account_id: "{account_id_str}". '
+                        f'Must be a valid UUID.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Validate account exists and belongs to this company ──
+        try:
+            account = (
+                Account.objects
+                .select_related('classification', 'parent_account')
+                .get(id=account_id, company=company)
+            )
+        except Account.DoesNotExist:
+            return Response(
+                {
+                    'success': False,
+                    'message': (
+                        f'Account not found. No account with ID '
+                        f'"{account_id}" exists in this company.'
+                    ),
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # ── Parse to_date (parse first — needed for from_date default) ──
+        to_date_str = request.query_params.get('to_date')
+        if to_date_str:
+            to_date, err = _parse_date_param(to_date_str, 'to_date')
+            if err:
+                return Response(
+                    {'success': False, 'message': err},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            to_date = date.today()
+
+        # ── Parse from_date (default: fiscal year start of to_date) ──
+        from_date_str = request.query_params.get('from_date')
+        if from_date_str:
+            from_date, err = _parse_date_param(from_date_str, 'from_date')
+            if err:
+                return Response(
+                    {'success': False, 'message': err},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            from_date = _get_fiscal_year_start(company, to_date)
+
+        # ── Validate date range ──
+        if from_date > to_date:
+            return Response(
+                {
+                    'success': False,
+                    'message': (
+                        f'from_date ({from_date}) cannot be after '
+                        f'to_date ({to_date}).'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Generate report ──
+        report = generate_account_transactions(
+            company=company,
+            account=account,
+            from_date=from_date,
+            to_date=to_date,
+        )
+
+        # ── Build response ──
+        data = {
+            'report_title': report['report_title'],
+            'company_name': report['company_name'],
+            'base_currency': report['base_currency'],
+            'from_date': report['from_date'],
+            'to_date': report['to_date'],
+            'generated_at': datetime.now().isoformat(),
+
+            # Account info
+            'account': report['account'],
+
+            # Opening balance
+            'opening_balance': report['opening_balance'],
+            'opening_balance_type': report['opening_balance_type'],
+
+            # Transactions (no pagination)
+            'transactions': report['transactions'],
+            'transaction_count': report['transaction_count'],
+
+            # Period totals
+            'total_debit': report['total_debit'],
+            'total_credit': report['total_credit'],
+            'net_movement': report['net_movement'],
+
+            # Closing balance
+            'closing_balance': report['closing_balance'],
+            'closing_balance_type': report['closing_balance_type'],
+        }
 
         return Response({'success': True, 'data': data}, status=status.HTTP_200_OK)

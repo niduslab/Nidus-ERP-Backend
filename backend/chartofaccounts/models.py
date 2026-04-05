@@ -255,8 +255,6 @@ class Account(models.Model):
         return self.parent_account_id is not None
     
 
-
-
 class SystemAccountMapping(models.Model):
 
     id = models.UUIDField(

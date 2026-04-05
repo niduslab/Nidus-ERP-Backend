@@ -37,11 +37,21 @@ urlpatterns = [
         name='income-statement',
     ),
 
+    # ── General Ledger ──
+    path(
+        'reports/general-ledger/',
+        views.GeneralLedgerView.as_view(),
+        name='general-ledger',
+    ),
+
+    # ── Account Transactions (Drill-Down) ──
+    path(
+        'reports/account-transactions/',
+        views.AccountTransactionsView.as_view(),
+        name='account-transactions',
+    ),
+
     # ── Future report endpoints (uncomment as built) ──
-    # path('reports/general-ledger/',
-    #      views.GeneralLedgerView.as_view(), name='general-ledger'),
-    # path('reports/account-statement/',
-    #      views.AccountStatementView.as_view(), name='account-statement'),
     # path('reports/cash-flow/',
     #      views.CashFlowView.as_view(), name='cash-flow'),
 ]

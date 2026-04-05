@@ -12,8 +12,15 @@ ENDPOINTS:
     POST   /api/companies/<id>/journal-entries/<entry_id>/post/  Post a draft
     POST   /api/companies/<id>/journal-entries/<entry_id>/void/  Void a posted entry
 
-    GET    /api/companies/<id>/accounts/<account_id>/ledger/     Account ledger
     GET    /api/companies/<id>/accounts/<account_id>/balance/    Account balance
+
+    GET    /api/companies/<id>/journal-entries/bulk-import/template/  Download template
+    POST   /api/companies/<id>/journal-entries/bulk-import/upload/    Upload entries
+
+NOTE:
+    The Account Ledger view (previously at accounts/<id>/ledger/) has been
+    moved to the reports app as Account Transactions. This keeps all
+    read-only financial reporting in one app and all write operations here.
 
 DESIGN:
     Views handle HTTP concerns (request parsing, response formatting,
@@ -42,7 +49,6 @@ from .serializers import (
     UpdateManualJournalSerializer,
     ManualJournalListSerializer,
     ManualJournalDetailSerializer,
-    LedgerEntrySerializer,
     VoidJournalSerializer,
 )
 from .services import (
@@ -435,78 +441,8 @@ class JournalVoidView(APIView):
 
 
 # ══════════════════════════════════════════════════
-# ACCOUNT LEDGER & BALANCE
+# ACCOUNT BALANCE (remains here — lightweight utility, not a report)
 # ══════════════════════════════════════════════════
-
-class AccountLedgerView(APIView):
-    """
-    GET → List all ledger entries for a specific account.
-    Shows the transaction history of an account.
-    """
-    def get(self, request, company_id,account_id):
-        company, membership = get_company_and_membership(request, company_id)
-        if not membership:
-            return Response(
-                {'success': False, 'message': 'You do not have access to this company.'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        if membership.role not in JOURNAL_VIEW_ROLES:
-            return Response(
-                {'success': False, 'message': 'Your role does not have permission to view journal entries.'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        account = get_object_or_404(Account, id=account_id, company=company)
-
-        entries = LedgerEntry.objects.filter(
-            company=company,
-            ledger_account=account,
-        ).select_related('ledger_account').order_by('date', 'created_at')
-
-        # Optional date filters
-        date_from = request.query_params.get('date_from')
-        if date_from:
-            entries = entries.filter(date__gte=date_from)
-
-        date_to = request.query_params.get('date_to')
-        if date_to:
-            entries = entries.filter(date__lte=date_to)
-
-        # ── Pagination ──
-        from nidus_erp.pagination import StandardResultsSetPagination
-        paginator = StandardResultsSetPagination()
-        page = paginator.paginate_queryset(entries, request)
-
-        if page is not None:
-            serializer = LedgerEntrySerializer(page, many=True)
-            # Build custom response that includes account info + pagination
-            response = paginator.get_paginated_response(serializer.data)
-            response.data['account'] = {
-                'id': str(account.id),
-                'code': account.code,
-                'name': account.name,
-                'normal_balance': account.normal_balance,
-                'currency': account.currency,
-            }
-            return response
-
-        # Fallback
-        serializer = LedgerEntrySerializer(entries, many=True)
-        return Response(
-            {
-                'success': True,
-                'account': {
-                    'id': str(account.id),
-                    'code': account.code,
-                    'name': account.name,
-                    'normal_balance': account.normal_balance,
-                    'currency': account.currency,
-                },
-                'data': serializer.data,
-            },
-            status=status.HTTP_200_OK,
-        )
-    
 
 class AccountBalanceView(APIView):
     """
@@ -560,36 +496,39 @@ class AccountBalanceView(APIView):
             },
             status=status.HTTP_200_OK,
         )
-    
 
+
+# ══════════════════════════════════════════════════
+# BULK IMPORT
+# ══════════════════════════════════════════════════
 
 class BulkImportTemplateDownloadView(APIView):
     """
     GET /api/companies/<id>/journal-entries/bulk-import/template/
- 
+
     Download the bulk import Excel template, pre-populated with
     this company's account reference sheet.
     """
- 
+
     def get(self, request, company_id):
         company, membership = get_company_and_membership(request, company_id)
- 
+
         if not membership:
             return Response(
                 {'success': False, 'message': 'You do not have access to this company.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
- 
+
         if membership.role not in JOURNAL_WRITE_ROLES:
             return Response(
                 {'success': False, 'message': 'Only Owner, Admin, or Accountant can download the import template.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
- 
+
         from .bulk_import_template import generate_bulk_import_template
- 
+
         file_bytes = generate_bulk_import_template(company)
- 
+
         response = HttpResponse(
             file_bytes,
             content_type=(
@@ -601,42 +540,42 @@ class BulkImportTemplateDownloadView(APIView):
         response['Content-Disposition'] = (
             f'attachment; filename="NidusERP_Bulk_Journal_Import_{safe_name}.xlsx"'
         )
- 
+
         return response
- 
- 
+
+
 class BulkImportUploadView(APIView):
     """
     POST /api/companies/<id>/journal-entries/bulk-import/upload/
- 
+
     Upload a filled bulk import file (.xlsx or .csv).
- 
+
     Form data:
         file: The uploaded file
         save_mode: "valid_only" or "all_or_none" (default: "all_or_none")
- 
+
     "valid_only":  Save accepted entries, return rejected with errors.
     "all_or_none": If ANY entry fails, save nothing, return all errors.
- 
+
     All imported entries are created as DRAFT.
     """
     parser_classes = [MultiPartParser, FormParser]
- 
+
     def post(self, request, company_id):
         company, membership = get_company_and_membership(request, company_id)
- 
+
         if not membership:
             return Response(
                 {'success': False, 'message': 'You do not have access to this company.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
- 
+
         if membership.role not in JOURNAL_WRITE_ROLES:
             return Response(
                 {'success': False, 'message': 'Only Owner, Admin, or Accountant can import journal entries.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
- 
+
         # ── Get the uploaded file ──
         uploaded_file = request.FILES.get('file')
         if not uploaded_file:
@@ -644,7 +583,7 @@ class BulkImportUploadView(APIView):
                 {'success': False, 'message': 'No file uploaded. Please attach an .xlsx or .csv file.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
- 
+
         save_mode = request.data.get('save_mode', 'all_or_none')
         if save_mode not in ('valid_only', 'all_or_none'):
             return Response(
@@ -654,16 +593,16 @@ class BulkImportUploadView(APIView):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
- 
+
         # ── Validate the file ──
         from .bulk_import_validator import validate_bulk_import
- 
+
         result = validate_bulk_import(
             file_obj=uploaded_file,
             file_name=uploaded_file.name,
             company=company,
         )
- 
+
         # ── File-level error (can't even parse) ──
         if result.get('file_error'):
             return Response(
@@ -673,7 +612,7 @@ class BulkImportUploadView(APIView):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
- 
+
         # ── All-or-none mode: reject everything if any errors ──
         if save_mode == 'all_or_none' and not result['valid']:
             return Response(
@@ -686,12 +625,12 @@ class BulkImportUploadView(APIView):
                         f'to save only the valid entries.'
                     ),
                     'summary': result['summary'],
-                    'accepted_entries': result['accepted_entries'],   # ← ADD THIS LINE
+                    'accepted_entries': result['accepted_entries'],
                     'rejected_entries': result['rejected_entries'],
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
- 
+
         # ── No valid entries to save ──
         if not result['parsed_data']:
             return Response(
@@ -703,10 +642,10 @@ class BulkImportUploadView(APIView):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
- 
+
         # ── Save valid entries ──
         from .services import bulk_create_journals
- 
+
         try:
             created = bulk_create_journals(
                 company=company,
@@ -721,7 +660,7 @@ class BulkImportUploadView(APIView):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
- 
+
         # ── Build response ──
         accepted_summary = [
             {
@@ -733,7 +672,7 @@ class BulkImportUploadView(APIView):
             }
             for j in created
         ]
- 
+
         response_data = {
             'success': True,
             'message': (
@@ -750,9 +689,8 @@ class BulkImportUploadView(APIView):
             },
             'accepted_entries': accepted_summary,
         }
- 
+
         if result['rejected_entries']:
             response_data['rejected_entries'] = result['rejected_entries']
- 
+
         return Response(response_data, status=status.HTTP_201_CREATED)
- 
