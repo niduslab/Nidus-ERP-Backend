@@ -1,4 +1,4 @@
-# backend/accounts/views.py
+# backend/chartofaccounts/views.py
 
 from django.db import transaction
 from django.shortcuts import get_object_or_404
@@ -172,6 +172,8 @@ class ClassificationListCreateView(APIView):
 
         parent_path = serializer.validated_data['parent_path']
         name = serializer.validated_data['name']
+        # ── NEW: Extract cash flow category (defaults to OPERATING) ──
+        cash_flow_category = serializer.validated_data.get('cash_flow_category', 'OPERATING')
 
         parent = AccountClassification.objects.get(
             company=company,
@@ -185,6 +187,7 @@ class ClassificationListCreateView(APIView):
             parent=parent,
             name=name,
             internal_path=new_path,
+            cash_flow_category=cash_flow_category,
         )
 
         return Response(
@@ -778,6 +781,7 @@ class ChartOfAccountsTreeView(APIView):
                 'name': c.name,
                 'internal_path': c.internal_path,
                 'layer': c.layer,
+                'cash_flow_category': c.cash_flow_category,
                 'children': [],
                 'accounts': [],
             }

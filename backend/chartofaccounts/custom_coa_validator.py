@@ -38,7 +38,10 @@ from .seed import CLASSIFICATIONS, DEFAULT_ACCOUNTS
 # REFERENCE DATA
 # ──────────────────────────────────────────────
 
-CLASSIFICATION_HEADERS = ['Status', 'Parent (Layer 2) (Required)', 'Classification Name (Required)']
+CLASSIFICATION_HEADERS = [
+    'Status', 'Parent (Layer 2) (Required)',
+    'Classification Name (Required)', 'Cash Flow Category (Required)',
+]
 ACCOUNT_HEADERS = [
     'Status', 'System Code', 'Classification (Layer 3) (Required)',
     'Account Code (Required)', 'Account Name (Required)', 'Normal Balance (Required)',
@@ -47,28 +50,36 @@ ACCOUNT_HEADERS = [
 
 # Column name mappings for user-facing error messages.
 # These strip the "(Required)"/"(Optional)" suffixes to keep errors clean.
-CLASSIFICATION_COL_NAMES = ['Status', 'Parent (Layer 2)', 'Classification Name']
+CLASSIFICATION_COL_NAMES = ['Status', 'Parent (Layer 2)', 'Classification Name', 'Cash Flow Category']
 ACCOUNT_COL_NAMES = [
     'Status', 'System Code', 'Classification (Layer 3)',
     'Account Code', 'Account Name', 'Normal Balance',
     'Currency', 'Description',
 ]
 
+# Valid cash flow category values
+VALID_CASH_FLOW_CATEGORIES = {'OPERATING', 'INVESTING', 'FINANCING', 'CASH'}
+
 DEFAULT_LAYER3_NAMES = set()
 DEFAULT_LAYER3_TO_PARENT = {}
+# NEW: Map L3 name → expected cash_flow_category (for SYSTEM row validation)
+DEFAULT_LAYER3_CASH_FLOW = {}
 
 _PATH_TO_NAME = {}
-for _path, _name in CLASSIFICATIONS:
+# CLASSIFICATIONS tuples now have 3 elements: (path, name, cash_flow_category)
+for _path, _name, _cf_cat in CLASSIFICATIONS:
     _PATH_TO_NAME[_path] = _name
 
-for _path, _name in CLASSIFICATIONS:
+for _path, _name, _cf_cat in CLASSIFICATIONS:
     if _path.count('.') == 2:
         DEFAULT_LAYER3_NAMES.add(_name)
         _parent_path = _path.rsplit('.', 1)[0]
         DEFAULT_LAYER3_TO_PARENT[_name] = _PATH_TO_NAME.get(_parent_path, '')
+        if _cf_cat:
+            DEFAULT_LAYER3_CASH_FLOW[_name] = _cf_cat
 
 VALID_LAYER2_NAMES = set()
-for _path, _name in CLASSIFICATIONS:
+for _path, _name, _cf_cat in CLASSIFICATIONS:
     if _path.count('.') == 1:
         VALID_LAYER2_NAMES.add(_name)
 
@@ -268,6 +279,7 @@ def _validate_classifications(ws, result):
         status = _clean_cell(raw[0]).upper()
         parent_name = _clean_cell(raw[1])
         class_name = _clean_cell(raw[2])
+        cash_flow_category = _clean_cell(raw[3]).upper() if len(raw) > 3 else ''
 
         # ── INCOMPLETE ROW DETECTION ──
         if status not in ('SYSTEM', 'CUSTOM'):
@@ -288,7 +300,8 @@ def _validate_classifications(ws, result):
                     f'Incomplete row — found data in {", ".join(filled_names)} '
                     f'but the Status column is empty. '
                     f'If you are adding a custom classification, set Status to "CUSTOM" '
-                    f'and fill in all required fields: Parent (Layer 2) and Classification Name. '
+                    f'and fill in all required fields: Parent (Layer 2), Classification Name, '
+                    f'and Cash Flow Category. '
                     f'If this row is not needed, clear all cells in the row.'
                 )
             continue
@@ -324,10 +337,20 @@ def _validate_classifications(ws, result):
 
                 all_classification_names.add(class_name)
 
+            # Validate cash_flow_category for SYSTEM rows
+            if class_name in DEFAULT_LAYER3_NAMES and cash_flow_category:
+                if cash_flow_category not in VALID_CASH_FLOW_CATEGORIES:
+                    result.add_error(
+                        'Classifications', row, 'Cash Flow Category',
+                        f'Invalid cash flow category "{cash_flow_category}" for '
+                        f'system classification "{class_name}". '
+                        f'Valid options: {", ".join(sorted(VALID_CASH_FLOW_CATEGORIES))}.'
+                    )
+
         # ── CUSTOM classification validation ──
         elif status == 'CUSTOM':
             # Skip entirely empty CUSTOM rows (placeholder rows)
-            if not class_name and not parent_name:
+            if not class_name and not parent_name and not cash_flow_category:
                 continue
 
             if not class_name and parent_name:
@@ -355,6 +378,22 @@ def _validate_classifications(ws, result):
                 )
             else:
                 all_classification_names.add(class_name)
+
+            # Validate cash_flow_category for CUSTOM rows
+            if not cash_flow_category:
+                result.add_error(
+                    'Classifications', row, 'Cash Flow Category',
+                    f'Cash Flow Category is required for custom classification '
+                    f'"{class_name}". '
+                    f'Valid options: {", ".join(sorted(VALID_CASH_FLOW_CATEGORIES))}.'
+                )
+            elif cash_flow_category not in VALID_CASH_FLOW_CATEGORIES:
+                result.add_error(
+                    'Classifications', row, 'Cash Flow Category',
+                    f'Invalid cash flow category "{cash_flow_category}" for '
+                    f'custom classification "{class_name}". '
+                    f'Valid options: {", ".join(sorted(VALID_CASH_FLOW_CATEGORIES))}.'
+                )
 
         # ── Duplicate detection ──
         if class_name:
@@ -386,12 +425,14 @@ def _validate_classifications(ws, result):
             status = _clean_cell(raw[0]).upper()
             parent_name = _clean_cell(raw[1])
             class_name = _clean_cell(raw[2])
+            cash_flow_category = _clean_cell(raw[3]).upper() if len(raw) > 3 else 'OPERATING'
 
             if status == 'CUSTOM' and class_name and parent_name:
                 result.classifications.append({
                     'parent_layer2_name': parent_name,
                     'name': class_name,
                     'is_custom': True,
+                    'cash_flow_category': cash_flow_category or 'OPERATING',
                 })
 
     return all_classification_names

@@ -26,7 +26,10 @@ def generate_default_coa(company, created_by):
 
         classification_map = {}
 
-        for internal_path, name in CLASSIFICATIONS:
+        # CLASSIFICATIONS tuples now have 3 elements:
+        # (internal_path, name, cash_flow_category)
+        # cash_flow_category is None for L1/L2, set for L3
+        for internal_path, name, cash_flow_category in CLASSIFICATIONS:
             if '.' in internal_path:
                 parent_path = internal_path.rsplit('.', 1)[0]
                 parent = classification_map[parent_path]
@@ -38,6 +41,7 @@ def generate_default_coa(company, created_by):
                 parent=parent,
                 name=name,
                 internal_path=internal_path,
+                cash_flow_category=cash_flow_category,
             )
 
             # Store in our lookup dictionary for later use
@@ -122,7 +126,9 @@ def generate_custom_coa(company, created_by, validated_data):
         classification_map = {}
         name_to_classification = {}
 
-        for internal_path, name in CLASSIFICATIONS:
+        # CLASSIFICATIONS tuples now have 3 elements:
+        # (internal_path, name, cash_flow_category)
+        for internal_path, name, cash_flow_category in CLASSIFICATIONS:
             if '.' in internal_path:
                 parent_path = internal_path.rsplit('.', 1)[0]
                 parent = classification_map[parent_path]
@@ -134,6 +140,7 @@ def generate_custom_coa(company, created_by, validated_data):
                 parent=parent,
                 name=name,
                 internal_path=internal_path,
+                cash_flow_category=cash_flow_category,
             )
 
             classification_map[internal_path] = classification
@@ -147,18 +154,19 @@ def generate_custom_coa(company, created_by, validated_data):
         # ──────────────────────────────────────
 
         layer2_name_to_classification = {}
-        for internal_path, name in CLASSIFICATIONS:
+        for internal_path, name, _ in CLASSIFICATIONS:
             if internal_path.count('.') == 1:
                 layer2_name_to_classification[name] = classification_map[internal_path]
 
         for custom_class in custom_classifications:
             parent_l2_name = custom_class['parent_layer2_name']
             class_name = custom_class['name']
+            # Custom classifications include cash_flow_category from the upload
+            cf_category = custom_class.get('cash_flow_category', 'OPERATING')
 
             parent = layer2_name_to_classification[parent_l2_name]
 
             # Generate internal path for the new classification.
-            # We reuse the same helper that the API views use.
             from .views import generate_next_internal_path
 
             new_path = generate_next_internal_path(company, parent.internal_path)
@@ -168,6 +176,7 @@ def generate_custom_coa(company, created_by, validated_data):
                 parent=parent,
                 name=class_name,
                 internal_path=new_path,
+                cash_flow_category=cf_category,
             )
 
             name_to_classification[class_name] = classification

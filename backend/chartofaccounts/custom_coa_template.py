@@ -113,19 +113,24 @@ TREE_BORDER = Border(
 def _build_classification_lookup():
     path_to_name = {}
     layer2_names = []
+    # NEW: Map L3 classification name → cash_flow_category
+    name_to_cash_flow = {}
 
-    for internal_path, name in CLASSIFICATIONS:
+    # CLASSIFICATIONS tuples now have 3 elements: (path, name, cash_flow_category)
+    for internal_path, name, cash_flow_category in CLASSIFICATIONS:
         path_to_name[internal_path] = name
         if internal_path.count('.') == 1:
             layer2_names.append(name)
+        if internal_path.count('.') == 2 and cash_flow_category:
+            name_to_cash_flow[name] = cash_flow_category
 
     path_to_parent_name = {}
-    for internal_path, name in CLASSIFICATIONS:
+    for internal_path, name, _ in CLASSIFICATIONS:
         if internal_path.count('.') == 2:
             parent_path = internal_path.rsplit('.', 1)[0]
             path_to_parent_name[internal_path] = path_to_name.get(parent_path, '')
 
-    return path_to_name, path_to_parent_name, layer2_names
+    return path_to_name, path_to_parent_name, layer2_names, name_to_cash_flow
 
 
 # ──────────────────────────────────────────────
@@ -242,6 +247,12 @@ def _build_instructions_sheet(ws):
         '  Status                            — DO NOT TOUCH. Pre-filled as SYSTEM or CUSTOM.',
         '  Parent (Layer 2) (Required)       — REQUIRED for CUSTOM rows. Must exactly match a Layer 2 name below.',
         '  Classification Name (Required)    — REQUIRED. Unique name for the Layer 3 group.',
+        '  Cash Flow Category (Required)     — REQUIRED. Which section of the Cash Flow Statement.',
+        '                                      Options: OPERATING, INVESTING, FINANCING, CASH.',
+        '                                      OPERATING = day-to-day business (most common).',
+        '                                      INVESTING = long-term asset purchases/sales.',
+        '                                      FINANCING = loans, equity, dividends.',
+        '                                      CASH = cash and bank accounts (the result, not an activity).',
     ]
     for line in class_field_lines:
         ws.cell(row=row, column=2, value=line).font = FONT_BODY
@@ -310,7 +321,7 @@ def _build_instructions_sheet(ws):
     row += 1
 
     layer1_to_layer2 = {}
-    for internal_path, name in CLASSIFICATIONS:
+    for internal_path, name, _cf_cat in CLASSIFICATIONS:
         if internal_path.count('.') == 0:
             layer1_to_layer2[internal_path] = {'name': name, 'children': []}
         elif internal_path.count('.') == 1:
@@ -339,7 +350,7 @@ def _build_instructions_sheet(ws):
     ).font = FONT_NOTE
     row += 2
 
-    path_to_name, _, _ = _build_classification_lookup()
+    path_to_name, _, _, _ = _build_classification_lookup()
 
     sys_headers = ['#', 'System Code', 'Default Name', 'Classification', 'Normal Balance']
     ws.column_dimensions['B'].width = 8
@@ -448,7 +459,7 @@ def _build_default_coa_tree_sheet(ws):
 
     # ── Build tree data ──
     path_to_name = {}
-    for p, n in CLASSIFICATIONS:
+    for p, n, _cf in CLASSIFICATIONS:
         path_to_name[p] = n
 
     # Group accounts by Layer 3
@@ -592,7 +603,7 @@ def _build_default_coa_tree_sheet(ws):
     prev_l3_path = ''
 
     # Walk through classifications in order
-    for cls_path, cls_name in CLASSIFICATIONS:
+    for cls_path, cls_name, _cf in CLASSIFICATIONS:
         depth = cls_path.count('.')
 
         if depth == 0:
@@ -721,31 +732,43 @@ def _build_classifications_sheet(ws):
     ws.column_dimensions['A'].width = 12
     ws.column_dimensions['B'].width = 36
     ws.column_dimensions['C'].width = 40
+    ws.column_dimensions['D'].width = 28     # NEW: Cash Flow Category column
 
-    headers = ['Status', 'Parent (Layer 2) (Required)', 'Classification Name (Required)']
+    headers = [
+        'Status',
+        'Parent (Layer 2) (Required)',
+        'Classification Name (Required)',
+        'Cash Flow Category (Required)',    # NEW
+    ]
 
     _style_header_row(ws, 1, len(headers))
     for col_idx, header in enumerate(headers, start=1):
         ws.cell(row=1, column=col_idx, value=header)
 
-    path_to_name, path_to_parent_name, _ = _build_classification_lookup()
+    path_to_name, path_to_parent_name, _, name_to_cash_flow = _build_classification_lookup()
 
     row = 2
-    for internal_path, name in CLASSIFICATIONS:
+    for internal_path, name, _cf_cat in CLASSIFICATIONS:
         if internal_path.count('.') != 2:
             continue
 
         parent_name = path_to_parent_name.get(internal_path, '')
+        # Get the cash flow category for this L3 classification
+        cf_category = name_to_cash_flow.get(name, 'OPERATING')
 
         ws.cell(row=row, column=1, value='SYSTEM')
         ws.cell(row=row, column=2, value=parent_name)
         ws.cell(row=row, column=3, value=name)
+        ws.cell(row=row, column=4, value=cf_category)   # NEW
 
         _style_data_row(ws, row, len(headers), is_system=True)
+        # Cash Flow Category is editable for SYSTEM rows too
+        ws.cell(row=row, column=4).font = FONT_EDITABLE
         row += 1
 
     for _ in range(20):
         ws.cell(row=row, column=1, value='CUSTOM')
+        ws.cell(row=row, column=4, value='OPERATING')    # NEW: Default for custom rows
         _style_data_row(ws, row, len(headers), is_system=False)
         row += 1
 
@@ -781,7 +804,7 @@ def _build_accounts_sheet(ws):
     for col_idx, header in enumerate(headers, start=1):
         ws.cell(row=1, column=col_idx, value=header)
 
-    path_to_name, _, _ = _build_classification_lookup()
+    path_to_name, _, _, _ = _build_classification_lookup()
 
     row = 2
     for (

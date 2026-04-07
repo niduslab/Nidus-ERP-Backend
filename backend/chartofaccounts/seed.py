@@ -10,77 +10,99 @@ STRUCTURE:
     CLASSIFICATIONS — Defines Layers 1, 2, and 3 (the tree skeleton)
     DEFAULT_ACCOUNTS — Defines Layer 4 accounts (the ledger-level leaves)
 
+CLASSIFICATION TUPLE FORMAT:
+    (internal_path, name, cash_flow_category)
 
+    cash_flow_category is only set for Layer 3 classifications.
+    Layer 1 and Layer 2 get None.
+
+    Values: 'OPERATING', 'INVESTING', 'FINANCING', 'CASH', or None
+
+CASH FLOW CATEGORY MAPPING RATIONALE:
+    CASH:       Cash and Bank accounts — these are the RESULT of the
+                Cash Flow Statement, not an activity. Their opening/closing
+                balances form the verification line.
+    OPERATING:  Working capital items (AR, AP, Inventory, Prepaid, Accrued)
+                and all P&L classifications (Revenue, Expenses). In the
+                indirect method, all P&L flows through Net Income, and
+                working capital changes are adjustments.
+    INVESTING:  Long-term asset purchases/sales (PPE, Investments,
+                Intangibles) and their contra accounts.
+    FINANCING:  Debt and equity transactions (Loans, Owner Capital,
+                Dividends, Drawings).
 """
 
 
 # ──────────────────────────────────────────────
 # LAYER 1, 2, AND 3 CLASSIFICATIONS
 # ──────────────────────────────────────────────
+# Format: (internal_path, name, cash_flow_category)
+# cash_flow_category: None for L1/L2, set for L3
+
 CLASSIFICATIONS = [
 
     # ── ASSET ──
-    ('1',           'Asset'),
-    ('1.10',        'Current Asset'),
-    ('1.10.1010',   'Cash'),
-    ('1.10.1020',   'Bank'),
-    ('1.10.1030',   'Inventory'),
-    ('1.10.1040',   'Tax Receivables'),
-    ('1.10.1050',   'Advances & Prepayments'),
-    ('1.10.1060',   'Receivables'),
-    ('1.10.1070',   'Other Current Asset'),
-    ('1.11',        'Non-Current Asset'),
-    ('1.11.1110',   'Property Plant & Equipment'),
-    ('1.11.1120',   'Accumulated Depreciation'),
-    ('1.11.1130',   'Intangible Assets'),
-    ('1.11.1140',   'Investments'),
-    ('1.11.1150',   'Other Non-Current Assets'),
+    ('1',           'Asset',                            None),
+    ('1.10',        'Current Asset',                    None),
+    ('1.10.1010',   'Cash',                             'CASH'),
+    ('1.10.1020',   'Bank',                             'CASH'),
+    ('1.10.1030',   'Inventory',                        'OPERATING'),
+    ('1.10.1040',   'Tax Receivables',                  'OPERATING'),
+    ('1.10.1050',   'Advances & Prepayments',           'OPERATING'),
+    ('1.10.1060',   'Receivables',                      'OPERATING'),
+    ('1.10.1070',   'Other Current Asset',              'OPERATING'),
+    ('1.11',        'Non-Current Asset',                None),
+    ('1.11.1110',   'Property Plant & Equipment',       'INVESTING'),
+    ('1.11.1120',   'Accumulated Depreciation',         'INVESTING'),
+    ('1.11.1130',   'Intangible Assets',                'INVESTING'),
+    ('1.11.1140',   'Investments',                      'INVESTING'),
+    ('1.11.1150',   'Other Non-Current Assets',         'INVESTING'),
 
     # ── LIABILITY ──
-    ('2',           'Liability'),
-    ('2.20',        'Short-Term Liabilities'),
-    ('2.20.2010',   'Accounts Payables'),
-    ('2.20.2020',   'Accrued Expense'),
-    ('2.20.2030',   'Withholding Tax & VAT'),
-    ('2.20.2040',   'Short-Term Loans'),
-    ('2.20.2050',   'Unearned Revenue'),
-    ('2.20.2060',   'Suspense & Clearing'),
-    ('2.20.2070',   'Other Current Liabilities'),
-    ('2.20.2080',   'Provisions'),
-    ('2.21',        'Long-Term Liabilities'),
-    ('2.21.2110',   'Long-Term Loans'),
-    ('2.21.2120',   'Other Long-Term Liabilities'),
+    ('2',           'Liability',                        None),
+    ('2.20',        'Short-Term Liabilities',           None),
+    ('2.20.2010',   'Accounts Payables',                'OPERATING'),
+    ('2.20.2020',   'Accrued Expense',                  'OPERATING'),
+    ('2.20.2030',   'Withholding Tax & VAT',            'OPERATING'),
+    ('2.20.2040',   'Short-Term Loans',                 'FINANCING'),
+    ('2.20.2050',   'Unearned Revenue',                 'OPERATING'),
+    ('2.20.2060',   'Suspense & Clearing',              'OPERATING'),
+    ('2.20.2070',   'Other Current Liabilities',        'OPERATING'),
+    ('2.20.2080',   'Provisions',                       'OPERATING'),
+    ('2.21',        'Long-Term Liabilities',            None),
+    ('2.21.2110',   'Long-Term Loans',                  'FINANCING'),
+    ('2.21.2120',   'Other Long-Term Liabilities',      'FINANCING'),
 
     # ── EQUITY ──
-    ('3',           'Equity'),
-    ('3.30',        "Owner's Equity & Reserves"),
-    ('3.30.3010',   "Owner's Equity"),
+    ('3',           'Equity',                           None),
+    ('3.30',        "Owner's Equity & Reserves",        None),
+    ('3.30.3010',   "Owner's Equity",                   'FINANCING'),
 
     # ── INCOME ──
-    ('4',           'Income'),
-    ('4.40',        'Operating Income'),
-    ('4.40.4010',   'Revenue'),
-    ('4.41',        'Non-Operating Income'),
-    ('4.41.4110',   'Interest & Investment Income'),
-    ('4.41.4120',   'Rent Income'),
-    ('4.41.4130',   'Other Income'),
+    ('4',           'Income',                           None),
+    ('4.40',        'Operating Income',                 None),
+    ('4.40.4010',   'Revenue',                          'OPERATING'),
+    ('4.41',        'Non-Operating Income',             None),
+    ('4.41.4110',   'Interest & Investment Income',     'OPERATING'),
+    ('4.41.4120',   'Rent Income',                      'OPERATING'),
+    ('4.41.4130',   'Other Income',                     'OPERATING'),
 
     # ── EXPENSE ──
-    ('5',           'Expense'),
-    ('5.50',        'Cost of Sales'),
-    ('5.50.5010',   'Cost of Goods Sold/Services'),
-    ('5.51',        'Operating Expense'),
-    ('5.51.5110',   'Payroll & Employee Costs'),
-    ('5.51.5120',   'Premises & Utilities'),
-    ('5.51.5130',   'Administrative & General'),
-    ('5.51.5140',   'Depreciation & Amortisation'),
-    ('5.51.5150',   'Sales & Marketing Expense'),
-    ('5.51.5160',   'Other Operating Expense'),
-    ('5.51.5170',   'Research & Development Expense'),
-    ('5.52',        'Non-Operating Expense'),
-    ('5.52.5210',   'Financial Expense'),
-    ('5.52.5220',   'Tax Expense'),
-    ('5.52.5230',   'Other Non-Operating Expense'),
+    ('5',           'Expense',                          None),
+    ('5.50',        'Cost of Sales',                    None),
+    ('5.50.5010',   'Cost of Goods Sold/Services',      'OPERATING'),
+    ('5.51',        'Operating Expense',                None),
+    ('5.51.5110',   'Payroll & Employee Costs',         'OPERATING'),
+    ('5.51.5120',   'Premises & Utilities',             'OPERATING'),
+    ('5.51.5130',   'Administrative & General',         'OPERATING'),
+    ('5.51.5140',   'Depreciation & Amortisation',      'OPERATING'),
+    ('5.51.5150',   'Sales & Marketing Expense',        'OPERATING'),
+    ('5.51.5160',   'Other Operating Expense',          'OPERATING'),
+    ('5.51.5170',   'Research & Development Expense',   'OPERATING'),
+    ('5.52',        'Non-Operating Expense',            None),
+    ('5.52.5210',   'Financial Expense',                'OPERATING'),
+    ('5.52.5220',   'Tax Expense',                      'OPERATING'),
+    ('5.52.5230',   'Other Non-Operating Expense',      'OPERATING'),
 ]
 
 
@@ -149,8 +171,6 @@ DEFAULT_ACCOUNTS = [
     ('1.11.1110', '11105', 'Land & Buildings',          'DEBIT', False, True, None),
 
     # ── Accumulated Depreciation ──
-    # CREDIT normal balance — this is a CONTRA-ASSET account
-    # It reduces the total value of assets on the Balance Sheet
     ('1.11.1120', '11201', 'Accumulated Depreciation', 'CREDIT', True, False, 'ACCUMULATED_DEPRECIATION'),
 
     # ── Intangible Assets ──
@@ -217,12 +237,7 @@ DEFAULT_ACCOUNTS = [
     # ── Owner's Equity ──
     ('3.30.3010', '30101', 'Owner Capital',      'CREDIT', True, False, 'OWNER_CAPITAL'),
     ('3.30.3010', '30102', 'Retained Earnings',  'CREDIT', True, False, 'RETAINED_EARNINGS'),
-    # Drawing is DEBIT-normal — it's a CONTRA-EQUITY account
-    # It reduces total equity (owner is taking money OUT)
     ('3.30.3010', '30103', 'Drawing',            'DEBIT',  True, False, 'DRAWING'),
-    # Dividends is DEBIT-normal — it's a CONTRA-EQUITY account
-    # It reduces total equity (distributing profits to shareholders)
-    # Not a system account — relevant for corporations, not sole proprietorships
     ('3.30.3010', '30104', 'Dividends',          'DEBIT',  False, True, None),
 
     # ════════════════════════════════════
@@ -233,12 +248,8 @@ DEFAULT_ACCOUNTS = [
     ('4.40.4010', '40101', 'Sales',                       'CREDIT', True,  False, 'SALES'),
     ('4.40.4010', '40102', 'Shipping Charge',             'CREDIT', False, True,  None),
     ('4.40.4010', '40103', 'Adjustment & Other Charges',  'CREDIT', False, True,  None),
-    # Sales Discount is DEBIT-normal — it's a CONTRA-INCOME account
-    # It reduces total revenue (giving discounts to customers)
     ('4.40.4010', '40104', 'Sales Discount',              'DEBIT',  True,  False, 'SALES_DISCOUNT'),
-    # Sales Returns is also CONTRA-INCOME
     ('4.40.4010', '40105', 'Sales Returns & Allowances',  'DEBIT',  True,  False, 'SALES_RETURNS'),
-    # Service Revenue — used by the sales module when invoicing services
     ('4.40.4010', '40106', 'Service Revenue',             'CREDIT', True,  False, 'SERVICE_REVENUE'),
 
     # ── Interest & Investment Income ──
@@ -250,7 +261,6 @@ DEFAULT_ACCOUNTS = [
 
     # ── Other Income ──
     ('4.41.4130', '41301', 'Commission Income',      'CREDIT', False, True,  None),
-    # Gain on Asset Disposal — Fixed Asset module posts here when selling at a profit
     ('4.41.4130', '41302', 'Gain on Asset Disposal',  'CREDIT', True,  False, 'GAIN_ON_DISPOSAL'),
     ('4.41.4130', '41303', 'FX Gain (Realized)',      'CREDIT', True,  False, 'FX_GAIN'),
     ('4.41.4130', '41304', 'Other Income',            'CREDIT', False, True,  None),
@@ -262,12 +272,8 @@ DEFAULT_ACCOUNTS = [
     # ── Cost of Sales ──
     ('5.50.5010', '50101', 'Cost of Goods Sold',  'DEBIT',  True,  False, 'COGS'),
     ('5.50.5010', '50102', 'Cost of Services',    'DEBIT',  True,  False, 'COST_OF_SERVICES'),
-    # Purchase Discount is CREDIT-normal — it's a CONTRA-EXPENSE account
-    # It reduces total cost of purchases (getting discounts from suppliers)
     ('5.50.5010', '50103', 'Purchase Discount',              'CREDIT', True,  False, 'PURCHASE_DISCOUNT'),
-    # Purchase Returns — mirrors SALES_RETURNS on the expense side
     ('5.50.5010', '50104', 'Purchase Returns & Allowances',  'CREDIT', True,  False, 'PURCHASE_RETURNS'),
-    # Inventory Adjustment — stock count differences, damage, write-downs
     ('5.50.5010', '50105', 'Inventory Adjustment',           'DEBIT',  True,  False, 'INVENTORY_ADJUSTMENT'),
 
     # ── Payroll & Employee Costs ──
@@ -312,7 +318,6 @@ DEFAULT_ACCOUNTS = [
     ('5.52.5220', '52201', 'Income Tax Expense', 'DEBIT', True, False, 'INCOME_TAX_EXPENSE'),
 
     # ── Other Non-Operating Expense ──
-    # Loss on Asset Disposal — Fixed Asset module posts here when selling at a loss
     ('5.52.5230', '52301', 'Loss on Asset Disposal', 'DEBIT', True,  False, 'LOSS_ON_DISPOSAL'),
     ('5.52.5230', '52302', 'Other Expense',          'DEBIT', False, True,  None),
 ]

@@ -4,6 +4,36 @@ import uuid
 from django.conf import settings
 from django.db import models
 
+
+# ══════════════════════════════════════════════════
+# CASH FLOW CATEGORY CHOICES
+# ══════════════════════════════════════════════════
+
+class CashFlowCategoryChoices(models.TextChoices):
+    """
+    Categorises L3 classifications for the Cash Flow Statement.
+
+    The Cash Flow Statement groups all account movements into one of
+    these categories. The category is set on the L3 classification
+    because that's the layer accounts attach to — so all accounts
+    under a given L3 inherit its cash flow category.
+
+    OPERATING:  Day-to-day business activities. Includes working capital
+                changes (AR, AP, Inventory) and all P&L items.
+    INVESTING:  Purchase/sale of long-term assets (PPE, Investments,
+                Intangibles) and their contra accounts (Accumulated Depreciation).
+    FINANCING:  Debt and equity transactions (loans, owner capital,
+                dividends, drawings).
+    CASH:       Cash and cash equivalents (Petty Cash, Bank, etc.).
+                These are NOT an activity — they are the RESULT.
+                Their opening/closing balances form the verification line.
+    """
+    OPERATING = 'OPERATING', 'Operating Activities'
+    INVESTING = 'INVESTING', 'Investing Activities'
+    FINANCING = 'FINANCING', 'Financing Activities'
+    CASH = 'CASH', 'Cash & Cash Equivalents'
+
+
 class AccountClassification(models.Model):
 
     id = models.UUIDField(
@@ -38,6 +68,25 @@ class AccountClassification(models.Model):
         db_index=True,
         verbose_name='internal path',
         help_text='System-generated. Do not edit manually.',
+    )
+
+    # ── Cash Flow Category (L3 only) ──
+    # Only meaningful for Layer 3 classifications.
+    # L1 and L2 classifications have this set to NULL.
+    # Determines which section of the Cash Flow Statement
+    # accounts under this classification appear in.
+    cash_flow_category = models.CharField(
+        max_length=10,
+        choices=CashFlowCategoryChoices.choices,
+        null=True,
+        blank=True,
+        default=None,
+        verbose_name='cash flow category',
+        help_text=(
+            'Which section of the Cash Flow Statement accounts '
+            'under this classification appear in. '
+            'Only applicable to Layer 3 classifications.'
+        ),
     )
 
     created_at = models.DateTimeField(
@@ -214,19 +263,6 @@ class Account(models.Model):
             # ────────────────────────────────────────────────
             # DUPLICATE NAME PREVENTION (COMPANY-WIDE)
             # ────────────────────────────────────────────────
-            # Account names must be unique across the entire company's CoA.
-            # This enables bulk import by account name (no ambiguity).
-            #
-            # WHY company-wide instead of per-classification?
-            #   Bulk journal import uses account names to identify accounts.
-            #   If two accounts share a name under different classifications,
-            #   the system can't determine which one the user means.
-            #
-            # WHY include is_active?
-            #   Deactivated accounts don't block the name. If a user
-            #   deactivates "Old Petty Cash" and creates a new one, the
-            #   constraint won't interfere.
-            # ────────────────────────────────────────────────
             models.UniqueConstraint(
                 fields=['company', 'name'],
                 condition=models.Q(is_active=True),
@@ -235,12 +271,10 @@ class Account(models.Model):
         ]
 
         indexes = [
-            # Speed up the most common query: "all active accounts for a company"
             models.Index(
                 fields=['company', 'is_active'],
                 name='idx_account_company_active',
             ),
-            # Speed up: "all accounts under a specific classification"
             models.Index(
                 fields=['company', 'classification'],
                 name='idx_account_company_class',
@@ -254,6 +288,8 @@ class Account(models.Model):
     def is_sub_account(self):
         return self.parent_account_id is not None
     
+
+
 
 class SystemAccountMapping(models.Model):
 
@@ -288,8 +324,6 @@ class SystemAccountMapping(models.Model):
         verbose_name_plural = 'system account mappings'
 
         constraints = [
-            # Each system_code can only appear once per company.
-            # A company can't have two "SALES" mappings.
             models.UniqueConstraint(
                 fields=['company', 'system_code'],
                 name='unique_system_code_per_company',

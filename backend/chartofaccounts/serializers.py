@@ -27,6 +27,7 @@ class AccountClassificationSerializer(serializers.ModelSerializer):
             'internal_path',
             'layer',
             'parent',
+            'cash_flow_category',   # ← NEW: Cash flow category for L3
             'children_count',
             'accounts_count',
             'created_at',
@@ -75,6 +76,22 @@ class CreateClassificationSerializer(serializers.Serializer):
     parent_path = serializers.CharField(
         max_length=500,
         help_text='Internal path of the Layer 2 parent (e.g., "1.10" for Current Asset)',
+    )
+
+    # ── NEW: Cash flow category for the Cash Flow Statement ──
+    # Optional — defaults to OPERATING, which is the most common category.
+    # Users can set this when creating custom L3 classifications to control
+    # where accounts under this group appear in the Cash Flow Statement.
+    cash_flow_category = serializers.ChoiceField(
+        choices=['OPERATING', 'INVESTING', 'FINANCING', 'CASH'],
+        default='OPERATING',
+        required=False,
+        help_text=(
+            'Cash Flow Statement category. Determines which section '
+            'accounts under this classification appear in. '
+            'Options: OPERATING, INVESTING, FINANCING, CASH. '
+            'Default: OPERATING.'
+        ),
     )
 
     def validate_parent_path(self, value):
@@ -230,9 +247,6 @@ class CreateAccountSerializer(serializers.Serializer):
         help_text='User-visible account code (must be unique within the company)',
     )
 
-    # UUIDField: expects a UUID string from the frontend.
-    # required=False: this field is optional. When creating a sub-account,
-    # the user sends parent_account_id instead.
     classification_id = serializers.UUIDField(
         required=False,
         help_text='Layer 3 classification ID. Required when creating a Layer 4 account.',
@@ -263,7 +277,6 @@ class CreateAccountSerializer(serializers.Serializer):
 
     def validate_name(self, value):
         company = self.context['company']
-        # Check company-wide uniqueness (not just within classification)
         if Account.objects.filter(
             company=company,
             name=value,
@@ -276,14 +289,6 @@ class CreateAccountSerializer(serializers.Serializer):
         return value
 
     def validate_code(self, value):
-        """
-        Account codes cannot contain spaces and must be unique
-        within the company.
-
-        NOTE: This method ONLY validates the 'code' field.
-        Name uniqueness is checked in validate() because it needs
-        access to the classification, which is resolved there.
-        """
         if ' ' in value:
             raise serializers.ValidationError(
                 'Account code cannot contain spaces.'
@@ -298,18 +303,10 @@ class CreateAccountSerializer(serializers.Serializer):
         return value
 
     def validate(self, data):
-        """
-        Cross-field validation. This runs AFTER all individual field
-        validations pass. Here we check rules that involve multiple fields.
-
-        DRF calls this automatically. The "data" parameter is a dictionary
-        containing all the validated field values.
-        """
         company = self.context['company']
         classification_id = data.get('classification_id')
         parent_account_id = data.get('parent_account_id')
 
-        # ── Rule 1: Must provide exactly one of classification_id or parent_account_id ──
         if classification_id and parent_account_id:
             raise serializers.ValidationError(
                 'Provide either classification_id (for Layer 4) or '
@@ -322,7 +319,6 @@ class CreateAccountSerializer(serializers.Serializer):
                 'parent_account_id (for sub-accounts).'
             )
 
-        # ── Scenario A: Creating a Layer 4 account under a classification ──
         if classification_id:
             try:
                 classification = AccountClassification.objects.get(
@@ -340,11 +336,9 @@ class CreateAccountSerializer(serializers.Serializer):
                                           f'"{classification.name}" is Layer {classification.layer}.'}
                 )
 
-            # Store the classification object for use in the view's create logic
             data['_classification'] = classification
             data['_parent_account'] = None
 
-        # ── Scenario B: Creating a sub-account under an existing account ──
         if parent_account_id:
             try:
                 parent_account = Account.objects.get(
@@ -357,12 +351,9 @@ class CreateAccountSerializer(serializers.Serializer):
                     {'parent_account_id': 'Parent account not found.'}
                 )
 
-            # Sub-accounts inherit their parent's classification
             data['_classification'] = parent_account.classification
             data['_parent_account'] = parent_account
 
-            # ── Rule: Sub-account currency must match the Layer 4 ancestor ──
-            # Walk up to find the Layer 4 ancestor
             ancestor = parent_account
             while ancestor.parent_account is not None:
                 ancestor = ancestor.parent_account
@@ -374,29 +365,11 @@ class CreateAccountSerializer(serializers.Serializer):
                                  f'Layer 4 ancestor ({ancestor.currency}).'}
                 )
 
-            # Force the currency to match the ancestor
             data['currency'] = ancestor.currency
 
-        # ── Default currency to company base currency if not provided ──
         if not data.get('currency'):
             data['currency'] = company.base_currency
 
-        # ────────────────────────────────────────────────
-        # DUPLICATE NAME CHECK
-        # ────────────────────────────────────────────────
-        # Enforced at the classification level: no two active accounts
-        # under the same Layer 3 group can share a name.
-        #
-        # WHY HERE AND NOT IN validate_name()?
-        #   Because we need the resolved classification object, which is
-        #   only available after the classification_id / parent_account_id
-        #   logic above runs. Field-level validators (validate_name) execute
-        #   before cross-field validate(), so they don't have access to
-        #   _classification yet.
-        #
-        # This is the serializer-level check. The database constraint
-        # (unique_active_account_name_per_classification) is the safety net.
-        # ────────────────────────────────────────────────
         classification = data['_classification']
         name = data['name']
 
@@ -426,8 +399,6 @@ class UpdateAccountSerializer(serializers.Serializer):
     journal entries).
     """
 
-    # required=False on every field because PATCH requests
-    # only send the fields being changed, not all fields.
     name = serializers.CharField(
         max_length=200,
         required=False,
@@ -464,10 +435,6 @@ class UpdateAccountSerializer(serializers.Serializer):
             )
 
         company = self.context['company']
-
-        # self.context['account'] is the existing account being updated.
-        # We need to exclude it from the uniqueness check — an account
-        # should be allowed to keep its own code.
         account = self.context['account']
 
         if Account.objects.filter(
@@ -482,14 +449,6 @@ class UpdateAccountSerializer(serializers.Serializer):
         return value
 
     def validate(self, data):
-        """
-        Cross-field validation for updates.
-
-        If the user is renaming the account, we check that the new name
-        doesn't conflict with another active account in the same
-        classification.
-        """
-        # Only run name uniqueness check if name is actually being changed
         if 'name' not in data:
             return data
 
@@ -497,11 +456,9 @@ class UpdateAccountSerializer(serializers.Serializer):
         account = self.context['account']
         new_name = data['name']
 
-        # If the name hasn't actually changed, skip the check
         if new_name == account.name:
             return data
 
-        # Check for duplicates within the same classification
         if Account.objects.filter(
             company=company,
             classification=account.classification,

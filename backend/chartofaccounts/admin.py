@@ -10,14 +10,28 @@ from .models import AccountClassification, Account, SystemAccountMapping
 
 @admin.register(AccountClassification)
 class AccountClassificationAdmin(admin.ModelAdmin):
-    list_display = ['internal_path', 'name', 'layer', 'parent', 'company']
-    list_filter = ['company', 'name']
+    # Added cash_flow_category to list_display
+    list_display = ['internal_path', 'name', 'layer', 'cash_flow_category', 'parent', 'company']
+    list_filter = ['company', 'cash_flow_category', 'name']
     search_fields = ['name', 'internal_path', 'company__name']
     ordering = ['company', 'internal_path']
     readonly_fields = ['id', 'internal_path', 'created_at'] 
 
     class Media:
         js = ('admin/js/company_scoped_filter.js',)
+
+    fieldsets = (
+        ('Classification', {
+            'fields': (
+                'id', 'company', 'parent', 'name', 'internal_path',
+                'cash_flow_category',
+            ),
+        }),
+        ('Audit', {
+            'fields': ('created_at',),
+            'classes': ('collapse',),
+        }),
+    )
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         """
@@ -26,7 +40,6 @@ class AccountClassificationAdmin(admin.ModelAdmin):
         Layer 1 and Layer 2 are system-generated during CoA creation.
         """
         if db_field.name == 'parent':
-            # Layer 2 = exactly 1 dot in internal_path (e.g., "1.10")
             kwargs['queryset'] = AccountClassification.objects.filter(
                 internal_path__regex=r'^[^.]+\.[^.]+$'
             )
@@ -87,24 +100,17 @@ class AccountAdmin(admin.ModelAdmin):
     )
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
-        """
-        Restrict classification dropdown to Layer 3 only.
-        Restrict parent_account to Layer 4+ accounts only.
-        """
         if db_field.name == 'classification':
-            # Only show Layer 3 classifications (internal_path has exactly 2 dots)
             kwargs['queryset'] = AccountClassification.objects.filter(
                 internal_path__regex=r'^[^.]+\.[^.]+\.[^.]+$'
             )
         if db_field.name == 'parent_account':
-            # Only show Layer 4+ accounts (existing accounts, not classifications)
             kwargs['queryset'] = Account.objects.filter(is_active=True)
         return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
     def save_model(self, request, obj, form, change):
         """Auto-generate internal_path when creating accounts from admin."""
         if not change:
-            # New account — generate internal_path
             from .views import generate_next_internal_path
 
             if obj.parent_account:
@@ -148,40 +154,64 @@ class AccountAdmin(admin.ModelAdmin):
 
         balance = get_account_balance(obj, include_sub_accounts=False)
 
+        # Build table rows using .format() to avoid f-string nested quote issues
         rows = []
         for e in entries:
             url = reverse('admin:journals_ledgerentry_change', args=[e.pk])
             rows.append(
-                f'<tr>'
-                f'<td style="padding:3px 6px">{e.date}</td>'
-                f'<td style="padding:3px 6px">{e.entry_type}</td>'
-                f'<td style="padding:3px 6px">{e.amount} {e.currency}</td>'
-                f'<td style="padding:3px 6px">{e.base_amount}</td>'
-                f'<td style="padding:3px 6px"><a href="{url}">{e.note or "—"}</a></td>'
-                f'</tr>'
+                '<tr>'
+                '<td style="padding:3px 6px">{date}</td>'
+                '<td style="padding:3px 6px">{etype}</td>'
+                '<td style="padding:3px 6px">{amt} {cur}</td>'
+                '<td style="padding:3px 6px">{base}</td>'
+                '<td style="padding:3px 6px"><a href="{url}">{note}</a></td>'
+                '</tr>'.format(
+                    date=e.date,
+                    etype=e.entry_type,
+                    amt=e.amount,
+                    cur=e.currency,
+                    base=e.base_amount,
+                    url=url,
+                    note=e.note or '—',
+                )
+            )
+
+        # Build the foreign balance display string
+        foreign_info = ''
+        if balance['foreign_balance'] is not None:
+            foreign_info = ' ({fb} {fc})'.format(
+                fb=balance['foreign_balance'],
+                fc=balance['currency'],
             )
 
         balance_line = (
-            f'<div style="margin-bottom:8px;font-weight:bold">'
-            f'{f" ({balance["foreign_balance"]} {balance["currency"]})" if balance["foreign_balance"] is not None else ""}'
-            f' Debits: {balance["total_debit"]} | Credits: {balance["total_credit"]}'
-            f'<div>Balance: {balance["balance"]} {balance["base_currency"]}</div>'
-            f'</div>'
+            '<div style="margin-bottom:8px;font-weight:bold">'
+            '{foreign}'
+            ' Debits: {td} | Credits: {tc}'
+            '<div>Balance: {bal} {bc}</div>'
+            '</div>'
+        ).format(
+            foreign=foreign_info,
+            td=balance['total_debit'],
+            tc=balance['total_credit'],
+            bal=balance['balance'],
+            bc=balance['base_currency'],
         )
 
         table = (
-            balance_line +
-            '<table style="border-collapse:collapse;width:100%;font-size:12px">'
-            '<tr style="font-weight:bold">'
-            '<td style="padding:3px 6px">Date</td>'
-            '<td style="padding:3px 6px">Dr/Cr</td>'
-            '<td style="padding:3px 6px">Amount</td>'
-            '<td style="padding:3px 6px">Base</td>'
-            '<td style="padding:3px 6px">Note</td>'
-            '</tr>' + ''.join(rows) +
-            '</table>'
-            '<div style="margin-top:4px;font-size:11px;color:#666">'
-            'Showing latest 20 entries.</div>'
+            balance_line
+            + '<table style="border-collapse:collapse;width:100%;font-size:12px">'
+              '<tr style="font-weight:bold">'
+              '<td style="padding:3px 6px">Date</td>'
+              '<td style="padding:3px 6px">Dr/Cr</td>'
+              '<td style="padding:3px 6px">Amount</td>'
+              '<td style="padding:3px 6px">Base</td>'
+              '<td style="padding:3px 6px">Note</td>'
+              '</tr>'
+            + ''.join(rows)
+            + '</table>'
+              '<div style="margin-top:4px;font-size:11px;color:#666">'
+              'Showing latest 20 entries.</div>'
         )
         return mark_safe(table)
     ledger_summary.short_description = 'Ledger entries & balance'
