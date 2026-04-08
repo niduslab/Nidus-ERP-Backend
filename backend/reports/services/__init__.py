@@ -9,3 +9,4 @@
 # income_statement.py       — Income Statement (Profit & Loss)
 # general_ledger.py         — General Ledger (transaction-level detail, all accounts)
 # account_transactions.py   — Account Transactions (drill-down, single account)
+# cash_flow.py              — Cash Flow Statement (Indirect Method)

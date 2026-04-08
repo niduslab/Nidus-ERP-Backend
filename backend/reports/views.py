@@ -35,6 +35,8 @@ from .services.balance_sheet import generate_balance_sheet
 from .services.income_statement import generate_income_statement
 from .services.general_ledger import generate_general_ledger
 from .services.account_transactions import generate_account_transactions
+from .services.cash_flow import generate_cash_flow
+from .services.cash_flow import generate_cash_flow
 
 from chartofaccounts.models import Account
 from journals.models import JournalTypeChoices
@@ -731,7 +733,7 @@ class AccountTransactionsView(APIView):
                     'message': (
                         'account_id is required. '
                         'Provide the UUID of the account to view.'
-                    ), 
+                    ),
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -843,5 +845,197 @@ class AccountTransactionsView(APIView):
             'closing_balance': report['closing_balance'],
             'closing_balance_type': report['closing_balance_type'],
         }
+
+        return Response({'success': True, 'data': data}, status=status.HTTP_200_OK)
+
+
+# ══════════════════════════════════════════════════
+# CASH FLOW STATEMENT
+# ══════════════════════════════════════════════════
+
+class CashFlowView(APIView):
+    """
+    GET /api/companies/{company_id}/reports/cash-flow/
+
+    Generates a Cash Flow Statement.
+    Shows where cash came from and where it went during a period,
+    split into Operating, Investing, and Financing activities.
+
+    Period-based report (like Income Statement).
+    Default period: fiscal year start → today.
+
+    Query Parameters:
+        method              'indirect' (default) | 'direct'
+        from_date           YYYY-MM-DD (default: fiscal year start)
+        to_date             YYYY-MM-DD (default: today)
+        compare_from_date   YYYY-MM-DD (optional comparison period start)
+        compare_to_date     YYYY-MM-DD (optional comparison period end)
+    """
+
+    def get(self, request, company_id):
+        company, error = _get_company_and_check_access(request, company_id)
+        if error:
+            return error
+
+        # ── Parse method (default: indirect) ──
+        method = request.query_params.get('method', 'indirect').lower()
+
+        if method not in ('indirect', 'direct'):
+            return Response(
+                {
+                    'success': False,
+                    'message': (
+                        f'Invalid method: "{method}". '
+                        f'Valid options: indirect, direct.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Direct method: not yet available ──
+        if method == 'direct':
+            return Response(
+                {
+                    'success': False,
+                    'message': (
+                        'The Direct Method for Cash Flow Statement is coming soon. '
+                        'This method requires transaction-level cash classification '
+                        'from modules like Sales, Purchase, Expense, and Payroll, '
+                        'which are not yet available. '
+                        'Please use method=indirect (the default) for now.'
+                    ),
+                },
+                status=status.HTTP_501_NOT_IMPLEMENTED,
+            )
+
+        # ── Parse to_date (parse first — needed for from_date default) ──
+        to_date_str = request.query_params.get('to_date')
+        if to_date_str:
+            to_date, err = _parse_date_param(to_date_str, 'to_date')
+            if err:
+                return Response(
+                    {'success': False, 'message': err},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            to_date = date.today()
+
+        # ── Parse from_date (default: fiscal year start of to_date) ──
+        from_date_str = request.query_params.get('from_date')
+        if from_date_str:
+            from_date, err = _parse_date_param(from_date_str, 'from_date')
+            if err:
+                return Response(
+                    {'success': False, 'message': err},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            from_date = _get_fiscal_year_start(company, to_date)
+
+        # ── Validate date range ──
+        if from_date > to_date:
+            return Response(
+                {
+                    'success': False,
+                    'message': (
+                        f'from_date ({from_date}) cannot be after '
+                        f'to_date ({to_date}).'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Parse comparison period ──
+        compare_from_date = None
+        compare_to_date = None
+        compare_from_str = request.query_params.get('compare_from_date')
+        compare_to_str = request.query_params.get('compare_to_date')
+
+        if compare_from_str or compare_to_str:
+            if not compare_from_str or not compare_to_str:
+                return Response(
+                    {
+                        'success': False,
+                        'message': (
+                            'Both compare_from_date and compare_to_date '
+                            'must be provided together.'
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            compare_from_date, err = _parse_date_param(
+                compare_from_str, 'compare_from_date',
+            )
+            if err:
+                return Response(
+                    {'success': False, 'message': err},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            compare_to_date, err = _parse_date_param(
+                compare_to_str, 'compare_to_date',
+            )
+            if err:
+                return Response(
+                    {'success': False, 'message': err},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if compare_from_date > compare_to_date:
+                return Response(
+                    {
+                        'success': False,
+                        'message': (
+                            f'compare_from_date ({compare_from_date}) cannot '
+                            f'be after compare_to_date ({compare_to_date}).'
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # ── Generate report ──
+        report = generate_cash_flow(
+            company=company,
+            from_date=from_date,
+            to_date=to_date,
+            compare_from_date=compare_from_date,
+            compare_to_date=compare_to_date,
+        )
+
+        # ── Build response ──
+        has_compare = compare_from_date is not None
+
+        data = {
+            'report_title': report['report_title'],
+            'method': report['method'],
+            'company_name': report['company_name'],
+            'base_currency': report['base_currency'],
+            'from_date': report['from_date'],
+            'to_date': report['to_date'],
+            'generated_at': datetime.now().isoformat(),
+
+            # Three activity sections
+            'operating_activities': report['operating_activities'],
+            'investing_activities': report['investing_activities'],
+            'financing_activities': report['financing_activities'],
+
+            # Cash reconciliation with verification
+            'cash_reconciliation': report['cash_reconciliation'],
+
+            # Summary totals
+            'summary': report['summary'],
+        }
+
+        # Add comparison data if applicable
+        if has_compare:
+            data['compare_from_date'] = report['compare_from_date']
+            data['compare_to_date'] = report['compare_to_date']
+            data['compare_operating_activities'] = report['compare_operating_activities']
+            data['compare_investing_activities'] = report['compare_investing_activities']
+            data['compare_financing_activities'] = report['compare_financing_activities']
+            data['compare_cash_reconciliation'] = report['compare_cash_reconciliation']
+            data['compare_summary'] = report['compare_summary']
+            data['changes'] = report['changes']
 
         return Response({'success': True, 'data': data}, status=status.HTTP_200_OK)

@@ -54,6 +54,7 @@ CLASSIFICATIONS = [
     ('1.11',        'Non-Current Asset',                None),
     ('1.11.1110',   'Property Plant & Equipment',       'INVESTING'),
     ('1.11.1120',   'Accumulated Depreciation',         'INVESTING'),
+    ('1.11.1125',   'Accumulated Amortisation',         'INVESTING'),
     ('1.11.1130',   'Intangible Assets',                'INVESTING'),
     ('1.11.1140',   'Investments',                      'INVESTING'),
     ('1.11.1150',   'Other Non-Current Assets',         'INVESTING'),
@@ -113,9 +114,9 @@ CLASSIFICATIONS = [
 #   (classification_path, account_code, name, normal_balance, is_system, is_deletable, system_code)
 
 # STATISTICS:
-#   Total accounts:  104
-#   System accounts:  43  (is_system=True, used by ERP modules)
-#   Non-deletable:    45  (43 system + 2 paired accounts)
+#   Total accounts:  105
+#   System accounts:  44  (is_system=True, used by ERP modules)
+#   Non-deletable:    46  (44 system + 2 paired accounts)
 #   Deletable:        59  (user can remove these)
 # ──────────────────────────────────────────────
 
@@ -171,7 +172,15 @@ DEFAULT_ACCOUNTS = [
     ('1.11.1110', '11105', 'Land & Buildings',          'DEBIT', False, True, None),
 
     # ── Accumulated Depreciation ──
+    # CREDIT normal balance — this is a CONTRA-ASSET account
+    # It reduces the total value of tangible assets on the Balance Sheet
     ('1.11.1120', '11201', 'Accumulated Depreciation', 'CREDIT', True, False, 'ACCUMULATED_DEPRECIATION'),
+
+    # ── Accumulated Amortisation ──
+    # CREDIT normal balance — CONTRA-ASSET for intangible assets
+    # Mirrors Accumulated Depreciation but for intangibles (IAS 38)
+    # Keeps original cost of intangibles visible on Balance Sheet
+    ('1.11.1125', '11251', 'Accumulated Amortisation', 'CREDIT', True, False, 'ACCUMULATED_AMORTISATION'),
 
     # ── Intangible Assets ──
     ('1.11.1130', '11301', 'Patents & Trademarks', 'DEBIT', False, True, None),

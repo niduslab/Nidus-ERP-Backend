@@ -51,7 +51,10 @@ urlpatterns = [
         name='account-transactions',
     ),
 
-    # ── Future report endpoints (uncomment as built) ──
-    # path('reports/cash-flow/',
-    #      views.CashFlowView.as_view(), name='cash-flow'),
+    # ── Cash Flow Statement ──
+    path(
+        'reports/cash-flow/',
+        views.CashFlowView.as_view(),
+        name='cash-flow',
+    ),
 ]
