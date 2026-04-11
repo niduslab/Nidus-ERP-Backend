@@ -36,7 +36,8 @@ from .services.income_statement import generate_income_statement
 from .services.general_ledger import generate_general_ledger
 from .services.account_transactions import generate_account_transactions
 from .services.cash_flow import generate_cash_flow
-from .services.cash_flow import generate_cash_flow
+
+from .exporters import maybe_export
 
 from chartofaccounts.models import Account
 from journals.models import JournalTypeChoices
@@ -200,6 +201,11 @@ class TrialBalanceView(APIView):
             compare_date=compare_date,
         )
 
+        # ── Export if requested ──
+        export_format = request.query_params.get('export')
+        if export_format:
+            return maybe_export(export_format, 'trial_balance', report, company.name)
+
         # ── Build response ──
         data = {
             'report_title': report['report_title'],
@@ -283,6 +289,11 @@ class BalanceSheetView(APIView):
             filter_mode=filter_mode,
             compare_date=compare_date,
         )
+
+        # ── Export if requested ──
+        export_format = request.query_params.get('export')
+        if export_format:
+            return maybe_export(export_format, 'balance_sheet', report, company.name)
 
         # ── Build response ──
         data = {
@@ -463,6 +474,11 @@ class IncomeStatementView(APIView):
             compare_to_date=compare_to_date,
         )
 
+        # ── Export if requested ──
+        export_format = request.query_params.get('export')
+        if export_format:
+            return maybe_export(export_format, 'income_statement', report, company.name)
+
         # ── Build response ──
         has_compare = compare_from_date is not None
 
@@ -622,6 +638,11 @@ class GeneralLedgerView(APIView):
             account_id=account_id,
             journal_type=journal_type,
         )
+
+        # ── Export if requested (before pagination — exports ALL accounts) ──
+        export_format = request.query_params.get('export')
+        if export_format:
+            return maybe_export(export_format, 'general_ledger', report, company.name)
 
         # ── Paginate at the account level ──
         # Each page contains N complete accounts with all their transactions.
@@ -816,6 +837,11 @@ class AccountTransactionsView(APIView):
             to_date=to_date,
         )
 
+        # ── Export if requested ──
+        export_format = request.query_params.get('export')
+        if export_format:
+            return maybe_export(export_format, 'account_transactions', report, company.name)
+
         # ── Build response ──
         data = {
             'report_title': report['report_title'],
@@ -1002,6 +1028,11 @@ class CashFlowView(APIView):
             compare_from_date=compare_from_date,
             compare_to_date=compare_to_date,
         )
+
+        # ── Export if requested ──
+        export_format = request.query_params.get('export')
+        if export_format:
+            return maybe_export(export_format, 'cash_flow', report, company.name)
 
         # ── Build response ──
         has_compare = compare_from_date is not None
