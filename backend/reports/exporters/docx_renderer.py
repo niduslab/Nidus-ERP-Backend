@@ -29,7 +29,7 @@ from docx.enum.section import WD_ORIENT
 from .styles import (
     COLOUR_PRIMARY, COLOUR_HEADER_BG, COLOUR_ROW_ALT, COLOUR_BORDER,
     COLOUR_L1, COLOUR_L2, COLOUR_L3, COLOUR_TOTAL, COLOUR_TEXT,
-    FONT_NAME, build_header_info,
+    FONT_NAME, build_header_info, pl_account_amount, pl_l3_amount,
 )
 
 
@@ -302,19 +302,20 @@ def _append_acct_rows(rows, acct, depth=3):
 
 def _append_section_rows_docx(rows, section, row_styles=None):
     """
-    Append L2 > L3 > account rows for a BS/IS section.
+    Append L2 > L3 > account rows for a BS section (single Amount column).
     If row_styles dict is provided, L2 and L3 row indices are tracked.
     """
     for l2 in section:
         if row_styles is not None:
             row_styles[len(rows)] = 'L2'
-        rows.append(['  ' + l2['name'], '', '', ''])
+        rows.append(['  ' + l2['name'], '', ''])
         for l3 in l2.get('children', []):
             if row_styles is not None:
                 row_styles[len(rows)] = 'L3'
-            rows.append(['    ' + l3['name'], '', _fmt(l3.get('subtotal_debit')), _fmt(l3.get('subtotal_credit'))])
+            l3_amt = pl_l3_amount(l3)
+            rows.append(['    ' + l3['name'], '', _fmt(l3_amt)])
             for acct in l3.get('accounts', []):
-                _append_acct_rows(rows, acct, depth=3)
+                _append_pl_acct_rows(rows, acct, depth=3)
 
 
 # ══════════════════════════════════════════════════
@@ -352,7 +353,7 @@ def _render_trial_balance(data):
 
 
 # ══════════════════════════════════════════════════
-# BALANCE SHEET
+# BALANCE SHEET (single Amount column)
 # ══════════════════════════════════════════════════
 
 def _render_balance_sheet(data):
@@ -365,40 +366,39 @@ def _render_balance_sheet(data):
 
     # ── ASSETS ──
     row_styles[len(rows)] = 'L1'
-    rows.append(['ASSETS', '', '', ''])
+    rows.append(['ASSETS', '', ''])
     _append_section_rows_docx(rows, data.get('assets', []), row_styles=row_styles)
     row_styles[len(rows)] = 'TOTAL'
-    rows.append(['Total Assets', '', _fmt(data.get('total_assets')), ''])
-    rows.append(['', '', '', ''])
+    rows.append(['Total Assets', '', _fmt(data.get('total_assets'))])
+    rows.append(['', '', ''])
 
     # ── LIABILITIES ──
     row_styles[len(rows)] = 'L1'
-    rows.append(['LIABILITIES', '', '', ''])
+    rows.append(['LIABILITIES', '', ''])
     _append_section_rows_docx(rows, data.get('liabilities', []), row_styles=row_styles)
     row_styles[len(rows)] = 'TOTAL'
-    rows.append(['Total Liabilities', '', _fmt(data.get('total_liabilities')), ''])
-    rows.append(['', '', '', ''])
+    rows.append(['Total Liabilities', '', _fmt(data.get('total_liabilities'))])
+    rows.append(['', '', ''])
 
     # ── EQUITY ──
     row_styles[len(rows)] = 'L1'
-    rows.append(['EQUITY', '', '', ''])
+    rows.append(['EQUITY', '', ''])
     _append_section_rows_docx(rows, data.get('equity', []), row_styles=row_styles)
-    # Retained earnings auto (before total equity)
     re_auto = data.get('retained_earnings_auto', {})
     if re_auto:
-        rows.append(['  Current Year Net Income (auto)', '', _fmt(re_auto.get('current_year_earnings')), ''])
-        rows.append(['  Prior Year Retained (auto)', '', _fmt(re_auto.get('prior_year_retained')), ''])
+        rows.append(['  Current Year Net Income (auto)', '', _fmt(re_auto.get('current_year_earnings'))])
+        rows.append(['  Prior Year Retained (auto)', '', _fmt(re_auto.get('prior_year_retained'))])
     row_styles[len(rows)] = 'TOTAL'
-    rows.append(['Total Equity', '', _fmt(data.get('total_equity')), ''])
-    rows.append(['', '', '', ''])
+    rows.append(['Total Equity', '', _fmt(data.get('total_equity'))])
+    rows.append(['', '', ''])
 
     # ── Grand totals ──
     row_styles[len(rows)] = 'TOTAL'
-    rows.append(['Total Assets', '', _fmt(data.get('total_assets')), ''])
+    rows.append(['Total Assets', '', _fmt(data.get('total_assets'))])
     row_styles[len(rows)] = 'TOTAL'
-    rows.append(['Total Liabilities & Equity', '', _fmt(data.get('total_liabilities_and_equity')), ''])
+    rows.append(['Total Liabilities & Equity', '', _fmt(data.get('total_liabilities_and_equity'))])
 
-    _add_table(doc, ['Account', 'Code', 'Debit', 'Credit'], rows, row_styles=row_styles)
+    _add_table(doc, ['Account', 'Code', 'Amount'], rows, row_styles=row_styles)
 
     balanced = 'YES' if data.get('is_balanced') else 'NO'
     _add_summary_line(doc, 'Balanced: {}'.format(balanced), bold=True)
@@ -407,31 +407,100 @@ def _render_balance_sheet(data):
 
 
 # ══════════════════════════════════════════════════
-# INCOME STATEMENT
+# INCOME STATEMENT (Zoho Books-style P&L — single Amount column)
 # ══════════════════════════════════════════════════
+
+def _append_pl_acct_rows(rows, acct, depth=2):
+    """
+    Recursively append a P&L account row with single Amount.
+    Shows own_balance as a positive number; skips zero intermediaries.
+    """
+    amt = pl_account_amount(acct)
+    if amt is not None:
+        indent = '  ' * depth
+        rows.append([indent + acct.get('name', ''), acct.get('code', ''), _fmt(amt)])
+    for child in acct.get('children', []):
+        _append_pl_acct_rows(rows, child, depth + 1)
+
+
+def _append_pl_section_rows_docx(rows, section_data, row_styles=None):
+    """
+    Append L3 groups + accounts for a P&L section (single Amount column).
+    """
+    for l2 in section_data:
+        for l3 in l2.get('children', []):
+            if row_styles is not None:
+                row_styles[len(rows)] = 'L3'
+            l3_amt = pl_l3_amount(l3)
+            rows.append(['  ' + l3['name'], '', _fmt(l3_amt)])
+            for acct in l3.get('accounts', []):
+                _append_pl_acct_rows(rows, acct, depth=2)
+
 
 def _render_income_statement(data):
     doc = _setup_doc()
     info = build_header_info(data)
     _add_header(doc, info)
 
+    # Single Amount column
     rows = []
     row_styles = {}
-    row_styles[len(rows)] = 'L1'
-    rows.append(['REVENUE', '', '', ''])
-    _append_section_rows_docx(rows, data.get('revenue', []), row_styles=row_styles)
-    row_styles[len(rows)] = 'TOTAL'
-    rows.append(['Total Revenue', '', _fmt(data.get('total_revenue')), ''])
-    rows.append(['', '', '', ''])
-    row_styles[len(rows)] = 'L1'
-    rows.append(['EXPENSES', '', '', ''])
-    _append_section_rows_docx(rows, data.get('expenses', []), row_styles=row_styles)
-    row_styles[len(rows)] = 'TOTAL'
-    rows.append(['Total Expenses', '', _fmt(data.get('total_expenses')), ''])
-    row_styles[len(rows)] = 'TOTAL'
-    rows.append(['NET INCOME', '', _fmt(data.get('net_income')), ''])
 
-    _add_table(doc, ['Account', 'Code', 'Debit', 'Credit'], rows, row_styles=row_styles)
+    # ── Operating Income ──
+    row_styles[len(rows)] = 'L1'
+    rows.append(['OPERATING INCOME', '', ''])
+    _append_pl_section_rows_docx(rows, data.get('operating_income', []), row_styles)
+    row_styles[len(rows)] = 'TOTAL'
+    rows.append(['Total Operating Income', '', _fmt(data.get('total_operating_income'))])
+    rows.append(['', '', ''])
+
+    # ── Cost of Goods Sold ──
+    row_styles[len(rows)] = 'L1'
+    rows.append(['COST OF GOODS SOLD', '', ''])
+    _append_pl_section_rows_docx(rows, data.get('cost_of_goods_sold', []), row_styles)
+    row_styles[len(rows)] = 'TOTAL'
+    rows.append(['Total Cost of Goods Sold', '', _fmt(data.get('total_cogs'))])
+    rows.append(['', '', ''])
+
+    # ── Gross Profit ──
+    row_styles[len(rows)] = 'TOTAL'
+    rows.append(['GROSS PROFIT', '', _fmt(data.get('gross_profit'))])
+    rows.append(['', '', ''])
+
+    # ── Operating Expenses ──
+    row_styles[len(rows)] = 'L1'
+    rows.append(['OPERATING EXPENSES', '', ''])
+    _append_pl_section_rows_docx(rows, data.get('operating_expenses', []), row_styles)
+    row_styles[len(rows)] = 'TOTAL'
+    rows.append(['Total Operating Expenses', '', _fmt(data.get('total_operating_expenses'))])
+    rows.append(['', '', ''])
+
+    # ── Operating Profit ──
+    row_styles[len(rows)] = 'TOTAL'
+    rows.append(['OPERATING PROFIT', '', _fmt(data.get('operating_profit'))])
+    rows.append(['', '', ''])
+
+    # ── Non-Operating Income ──
+    row_styles[len(rows)] = 'L1'
+    rows.append(['NON-OPERATING INCOME', '', ''])
+    _append_pl_section_rows_docx(rows, data.get('non_operating_income', []), row_styles)
+    row_styles[len(rows)] = 'TOTAL'
+    rows.append(['Total Non-Operating Income', '', _fmt(data.get('total_non_operating_income'))])
+    rows.append(['', '', ''])
+
+    # ── Non-Operating Expenses ──
+    row_styles[len(rows)] = 'L1'
+    rows.append(['NON-OPERATING EXPENSES', '', ''])
+    _append_pl_section_rows_docx(rows, data.get('non_operating_expenses', []), row_styles)
+    row_styles[len(rows)] = 'TOTAL'
+    rows.append(['Total Non-Operating Expenses', '', _fmt(data.get('total_non_operating_expenses'))])
+    rows.append(['', '', ''])
+
+    # ── Net Profit / Loss ──
+    row_styles[len(rows)] = 'TOTAL'
+    rows.append(['NET PROFIT / LOSS', '', _fmt(data.get('net_income'))])
+
+    _add_table(doc, ['Account', 'Code', 'Amount'], rows, row_styles=row_styles)
 
     return _to_bytes(doc)
 
@@ -452,14 +521,18 @@ def _render_general_ledger(data):
 
         rows = []
         for txn in account.get('transactions', []):
+            dr_val = _fmt(txn.get('debit')) if txn.get('debit') else ''
+            cr_val = _fmt(txn.get('credit')) if txn.get('credit') else ''
             rows.append([
-                txn.get('date', ''), txn.get('entry_type', ''),
-                _fmt(txn.get('base_amount')), _fmt(txn.get('running_balance')),
+                txn.get('date', ''), dr_val, cr_val,
+                _fmt(txn.get('running_balance')),
                 str(txn.get('note', ''))[:40], txn.get('journal_type', ''),
             ])
-        rows.append(['Closing', '', '', _fmt(account.get('closing_balance')), '', ''])
+        rows.append(['Closing', _fmt(account.get('total_debit')),
+                      _fmt(account.get('total_credit')),
+                      _fmt(account.get('closing_balance')), '', ''])
 
-        _add_table(doc, ['Date', 'Dr/Cr', 'Amount', 'Running Bal.', 'Note', 'Type'], rows)
+        _add_table(doc, ['Date', 'Debit', 'Credit', 'Running Bal.', 'Note', 'Type'], rows)
         doc.add_paragraph()
 
     _add_summary_line(doc, 'Grand Total — Debit: {} | Credit: {}'.format(
@@ -486,19 +559,19 @@ def _render_account_transactions(data):
 
     rows = []
     for txn in data.get('transactions', []):
+        dr_val = _fmt(txn.get('debit')) if txn.get('debit') else ''
+        cr_val = _fmt(txn.get('credit')) if txn.get('credit') else ''
         rows.append([
             txn.get('date', ''), txn.get('source_number', ''),
             str(txn.get('source_description', ''))[:35],
-            txn.get('entry_type', ''), _fmt(txn.get('base_amount')),
+            dr_val, cr_val,
             _fmt(txn.get('running_balance')),
         ])
-    rows.append(['', '', 'CLOSING BALANCE', '', '', _fmt(data.get('closing_balance'))])
+    rows.append(['', '', 'CLOSING BALANCE',
+                 _fmt(data.get('total_debit')), _fmt(data.get('total_credit')),
+                 _fmt(data.get('closing_balance'))])
 
-    _add_table(doc, ['Date', 'Source #', 'Description', 'Dr/Cr', 'Amount', 'Running Bal.'], rows)
-
-    _add_summary_line(doc, 'Total Debit: {} | Total Credit: {}'.format(
-        _fmt(data.get('total_debit')), _fmt(data.get('total_credit'))
-    ), bold=True)
+    _add_table(doc, ['Date', 'Source #', 'Description', 'Debit', 'Credit', 'Running Bal.'], rows)
 
     return _to_bytes(doc)
 
@@ -569,14 +642,16 @@ def _render_journal_entries(data):
     rows = []
     for journal in data.get('journals', []):
         for line in journal.get('lines', []):
+            dr_val = _fmt(line.get('amount')) if line.get('entry_type') == 'DEBIT' else ''
+            cr_val = _fmt(line.get('amount')) if line.get('entry_type') == 'CREDIT' else ''
             rows.append([
                 journal.get('entry_number', ''), journal.get('date', ''),
                 journal.get('status', ''),
                 '{} — {}'.format(line.get('account_code', ''), line.get('account_name', '')),
-                line.get('entry_type', ''), _fmt(line.get('amount')),
+                dr_val, cr_val,
                 str(journal.get('description', ''))[:30],
             ])
 
-    _add_table(doc, ['Entry #', 'Date', 'Status', 'Account', 'Dr/Cr', 'Amount', 'Description'], rows)
+    _add_table(doc, ['Entry #', 'Date', 'Status', 'Account', 'Debit', 'Credit', 'Description'], rows)
 
     return _to_bytes(doc)

@@ -152,6 +152,8 @@ def generate_account_transactions(company, account, from_date, to_date):
             'entry_id': str(entry.id),
             'date': str(entry.date),
             'entry_type': entry.entry_type,
+            'debit': str(entry.base_amount) if entry.entry_type == 'DEBIT' else None,
+            'credit': str(entry.base_amount) if entry.entry_type == 'CREDIT' else None,
             'amount': str(entry.amount),
             'currency': entry.currency,
             'exchange_rate': str(entry.exchange_rate),

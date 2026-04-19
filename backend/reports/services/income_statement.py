@@ -1,58 +1,24 @@
 # backend/reports/services/income_statement.py
 
 """
-Income Statement (Profit & Loss) report generation.
+Income Statement (Profit & Loss) — Zoho Books style layout.
 
-THE ACCOUNTING MODEL:
-    Net Income = Total Revenue − Total Expenses
+LAYOUT:
+    Operating Income → Total Operating Income
+    Cost of Goods Sold → Total COGS
+    GROSS PROFIT = Op Income − COGS
+    Operating Expenses → Total Operating Expenses
+    OPERATING PROFIT = Gross Profit − Op Expenses
+    Non-Operating Income → Total Non-Op Income
+    Non-Operating Expenses → Total Non-Op Expenses
+    NET PROFIT/LOSS
 
-    Revenue accounts (L1 = 4) are credit-normal:
-        - Raw net from balance_engine = (debit − credit)
-        - For a healthy revenue account, this is NEGATIVE (more credits)
-        - We NEGATE to display revenue as a positive number
-
-    Expense accounts (L1 = 5) are debit-normal:
-        - Raw net from balance_engine = (debit − credit)
-        - For a normal expense account, this is POSITIVE (more debits)
-        - We display as-is (positive = expense incurred)
-
-    Net Income = Total Revenue (negated credit net) − Total Expenses (raw debit net)
-
-PERIOD vs POINT-IN-TIME:
-    Unlike the Balance Sheet (point-in-time: "as of" a date), the
-    Income Statement is PERIOD-BASED: it shows activity between two dates.
-
-    We use get_period_balances(company, from_date, to_date) from the
-    balance engine, which runs a single SQL query with date range filter.
-    This is more efficient than the subtraction approach used in the
-    Balance Sheet's retained earnings calculation.
-
-DEFAULT DATE LOGIC:
-    If no from_date is given, we default to the company's fiscal year
-    start date. This matches standard accounting practice — the P&L
-    shows "Year-to-Date" (YTD) by default.
-
-COMPARISON SUPPORT:
-    The optional compare period (compare_from_date, compare_to_date)
-    enables period-over-period analysis. Typical use cases:
-    - This month vs. last month
-    - This quarter vs. same quarter last year
-    - YTD this year vs. YTD last year
-
-RESPONSE STRUCTURE:
-    Two sections (revenue, expenses), each with:
-    - Classification tree (L2 > L3 > accounts with infinite nesting)
-    - Section total (displayed as positive)
-    Plus summary totals: total_revenue, total_expenses, net_income
-    Plus comparison columns and change amounts when compare period is given
-
-REUSES FROM trial_balance.py:
-    _build_account_node, _has_included_descendant,
-    _get_included_account_ids, _stringify_accounts,
-    FILTER_ALL, FILTER_WITH_TRANSACTIONS, FILTER_NON_ZERO, VALID_FILTER_MODES
-
-CALLED FROM:
-    reports/views.py → IncomeStatementView
+L2 CLASSIFICATION PATHS (from seed.py):
+    4.40  Operating Income
+    4.41  Non-Operating Income
+    5.50  Cost of Sales (COGS)
+    5.51  Operating Expense
+    5.52  Non-Operating Expense
 """
 
 from datetime import date
@@ -78,34 +44,31 @@ from .trial_balance import (
 
 ZERO = Decimal('0.00')
 
-# ── L1 classification paths (from seed.py) ──
+# ── L1 classification paths ──
 L1_INCOME = '4'
 L1_EXPENSE = '5'
 PL_L1_PATHS = {L1_INCOME, L1_EXPENSE}
+
+# ── L2 classification paths for Zoho-style P&L sections ──
+L2_OPERATING_INCOME = '4.40'
+L2_NON_OPERATING_INCOME = '4.41'
+L2_COST_OF_SALES = '5.50'
+L2_OPERATING_EXPENSE = '5.51'
+L2_NON_OPERATING_EXPENSE = '5.52'
 
 
 def generate_income_statement(company, from_date, to_date,
                                filter_mode=FILTER_NON_ZERO,
                                compare_from_date=None, compare_to_date=None):
     """
-    Generate a complete Income Statement (P&L) report.
+    Generate a Zoho Books-style Income Statement (P&L) report.
 
-    Args:
-        company: Company instance
-        from_date: datetime.date — start of reporting period (inclusive)
-        to_date: datetime.date — end of reporting period (inclusive)
-        filter_mode: str — 'all', 'with_transactions', or 'non_zero'
-        compare_from_date: datetime.date or None — start of comparison period
-        compare_to_date: datetime.date or None — end of comparison period
-
-    Returns:
-        dict: Complete Income Statement data ready for API response
+    Returns dict with 5 sections plus intermediary totals
+    (gross_profit, operating_profit) and net_income.
     """
     has_compare = compare_from_date is not None and compare_to_date is not None
 
-    # ── Step 1: Get period balances from balance engine ──
-    # Unlike Balance Sheet which uses cumulative get_account_balances(),
-    # we use get_period_balances() which filters to [from_date, to_date].
+    # ── Step 1: Get period balances ──
     balances = get_period_balances(company, from_date, to_date)
     compare_balances = (
         get_period_balances(company, compare_from_date, compare_to_date)
@@ -119,14 +82,11 @@ def generate_income_statement(company, from_date, to_date,
             company, from_date, to_date,
         )
         if has_compare:
-            # Union: include accounts active in either period
             accounts_with_txn |= get_accounts_with_transactions_in_period(
                 company, compare_from_date, compare_to_date,
             )
 
-    # ── Step 3: Load ALL accounts (active + inactive) ──
-    # CRITICAL: Do NOT filter by is_active — inactive accounts may
-    # have had activity during the period before deactivation.
+    # ── Step 3: Load ALL accounts ──
     all_accounts = list(
         Account.objects
         .filter(company=company)
@@ -139,29 +99,18 @@ def generate_income_statement(company, from_date, to_date,
         .filter(company=company)
         .order_by('internal_path')
     )
-
     class_map = {c.internal_path: c for c in classifications}
 
     # ── Step 4: Separate P&L accounts by L1 type ──
-    # Income Statement only shows Income (L1=4) and Expense (L1=5).
-    # Balance Sheet accounts (L1=1,2,3) are excluded entirely.
-    income_accounts = []   # L1 = 4 (Revenue / Income)
-    expense_accounts = []  # L1 = 5 (Expense)
-    pl_accounts = []       # Combined for filter/tree building
-
+    pl_accounts = []
     for account in all_accounts:
         l1_path = account.classification.internal_path.split('.')[0]
-        if l1_path == L1_INCOME:
-            income_accounts.append(account)
-            pl_accounts.append(account)
-        elif l1_path == L1_EXPENSE:
-            expense_accounts.append(account)
+        if l1_path in PL_L1_PATHS:
             pl_accounts.append(account)
 
-    # ── Step 5: Build parent-child lookups (P&L accounts only) ──
-    children_by_parent = {}       # {parent_account_id: [child accounts]}
-    root_accounts_by_l3 = {}      # {l3_classification_id: [root accounts]}
-
+    # ── Step 5: Build parent-child lookups ──
+    children_by_parent = {}
+    root_accounts_by_l3 = {}
     for account in pl_accounts:
         if account.parent_account_id:
             children_by_parent.setdefault(
@@ -178,155 +127,184 @@ def generate_income_statement(company, from_date, to_date,
         accounts_with_txn, filter_mode, children_by_parent,
     )
 
-    # ── Step 7: Build the two sections ──
-    revenue_section = _build_section(
+    # ── Step 7: Build full L1 sections ──
+    revenue_l2_nodes = _build_section(
         L1_INCOME, root_accounts_by_l3, children_by_parent,
         class_map, balances, compare_balances, included_ids,
     )
-
-    expenses_section = _build_section(
+    expenses_l2_nodes = _build_section(
         L1_EXPENSE, root_accounts_by_l3, children_by_parent,
         class_map, balances, compare_balances, included_ids,
     )
 
-    # ── Step 8: Calculate totals ──
-    #
-    # _sum_section_total() returns raw (debit − credit):
-    #   Revenue:  typically negative (credit-normal) → negate for display
-    #   Expenses: typically positive (debit-normal)  → use as-is
-    #
-    # Example:
-    #   Revenue raw net  = −500,000  → total_revenue  = 500,000
-    #   Expense raw net  = +350,000  → total_expenses = 350,000
-    #   Net Income = 500,000 − 350,000 = 150,000 (profit)
-    #
-    total_revenue = -_sum_section_total(revenue_section)
-    total_expenses = _sum_section_total(expenses_section)
-    net_income = total_revenue - total_expenses
+    # ── Step 8: Split L2 nodes into 5 Zoho-style sections ──
+    operating_income = [
+        n for n in revenue_l2_nodes
+        if n['classification_path'].startswith(L2_OPERATING_INCOME)
+    ]
+    non_operating_income = [
+        n for n in revenue_l2_nodes
+        if n['classification_path'].startswith(L2_NON_OPERATING_INCOME)
+    ]
+    cost_of_goods_sold = [
+        n for n in expenses_l2_nodes
+        if n['classification_path'].startswith(L2_COST_OF_SALES)
+    ]
+    operating_expenses = [
+        n for n in expenses_l2_nodes
+        if n['classification_path'].startswith(L2_OPERATING_EXPENSE)
+    ]
+    non_operating_expenses = [
+        n for n in expenses_l2_nodes
+        if n['classification_path'].startswith(L2_NON_OPERATING_EXPENSE)
+    ]
 
-    # ── Step 9: Comparison totals ──
-    compare_total_revenue = None
-    compare_total_expenses = None
-    compare_net_income = None
-    change_revenue = None
-    change_expenses = None
-    change_net_income = None
-    change_revenue_pct = None
-    change_expenses_pct = None
-    change_net_income_pct = None
+    # ── Step 9: Calculate Zoho-style totals ──
+    # Revenue = NEGATED (credit-normal → positive display)
+    # Expenses = AS-IS (debit-normal → already positive)
+    total_operating_income = -_sum_section_total(operating_income)
+    total_cogs = _sum_section_total(cost_of_goods_sold)
+    gross_profit = total_operating_income - total_cogs
 
+    total_operating_expenses = _sum_section_total(operating_expenses)
+    operating_profit = gross_profit - total_operating_expenses
+
+    total_non_operating_income = -_sum_section_total(non_operating_income)
+    total_non_operating_expenses = _sum_section_total(non_operating_expenses)
+
+    net_income = (
+        operating_profit
+        + total_non_operating_income
+        - total_non_operating_expenses
+    )
+
+    # Legacy totals
+    total_revenue = total_operating_income + total_non_operating_income
+    total_expenses = total_cogs + total_operating_expenses + total_non_operating_expenses
+
+    # ── Step 10: Comparison totals ──
+    compare_data = {}
     if has_compare:
-        compare_total_revenue = -_sum_section_total(
-            revenue_section, compare=True
-        )
-        compare_total_expenses = _sum_section_total(
-            expenses_section, compare=True
-        )
-        compare_net_income = compare_total_revenue - compare_total_expenses
+        c_op_inc = -_sum_section_total(operating_income, compare=True)
+        c_cogs = _sum_section_total(cost_of_goods_sold, compare=True)
+        c_gross = c_op_inc - c_cogs
+        c_op_exp = _sum_section_total(operating_expenses, compare=True)
+        c_op_profit = c_gross - c_op_exp
+        c_noi = -_sum_section_total(non_operating_income, compare=True)
+        c_noe = _sum_section_total(non_operating_expenses, compare=True)
+        c_net = c_op_profit + c_noi - c_noe
 
-        # Absolute changes
-        change_revenue = total_revenue - compare_total_revenue
-        change_expenses = total_expenses - compare_total_expenses
-        change_net_income = net_income - compare_net_income
+        compare_data = {
+            'compare_from_date': str(compare_from_date),
+            'compare_to_date': str(compare_to_date),
+            'compare_total_operating_income': str(c_op_inc),
+            'compare_total_cogs': str(c_cogs),
+            'compare_gross_profit': str(c_gross),
+            'compare_total_operating_expenses': str(c_op_exp),
+            'compare_operating_profit': str(c_op_profit),
+            'compare_total_non_operating_income': str(c_noi),
+            'compare_total_non_operating_expenses': str(c_noe),
+            'compare_net_income': str(c_net),
+            'compare_total_revenue': str(c_op_inc + c_noi),
+            'compare_total_expenses': str(c_cogs + c_op_exp + c_noe),
+            'change_net_income': str(net_income - c_net),
+            'change_net_income_pct': (
+                str(_pct_change(net_income, c_net))
+                if _pct_change(net_income, c_net) is not None else None
+            ),
+        }
 
-        # Percentage changes (None if compare base is zero)
-        change_revenue_pct = _pct_change(total_revenue, compare_total_revenue)
-        change_expenses_pct = _pct_change(total_expenses, compare_total_expenses)
-        change_net_income_pct = _pct_change(net_income, compare_net_income)
+    # ── Step 11: Stringify all sections and add signed 'amount' field ──
+    # Revenue sections are credit-normal: own_credit → +, own_debit → −
+    # Expense sections are debit-normal:  own_debit → +, own_credit → −
+    _stringify_section(operating_income, has_compare, debit_positive=False)
+    _stringify_section(non_operating_income, has_compare, debit_positive=False)
+    _stringify_section(cost_of_goods_sold, has_compare, debit_positive=True)
+    _stringify_section(operating_expenses, has_compare, debit_positive=True)
+    _stringify_section(non_operating_expenses, has_compare, debit_positive=True)
 
-    # ── Step 10: Stringify all sections ──
-    _stringify_section(revenue_section, has_compare)
-    _stringify_section(expenses_section, has_compare)
+    # ── Step 12: Strip Dr/Cr fields — P&L uses single 'amount' only ──
+    # The 'amount' field was set during stringify. Now remove the raw
+    # debit/credit pairs so the JSON response is clean Zoho-style.
+    for section in [operating_income, non_operating_income,
+                    cost_of_goods_sold, operating_expenses, non_operating_expenses]:
+        _strip_dr_cr_from_section(section)
 
-    # Count included accounts
     account_count = len([a for a in pl_accounts if a.id in included_ids])
 
-    return {
+    result = {
         'report_title': 'Income Statement',
         'company_name': company.name,
         'base_currency': company.base_currency,
         'from_date': str(from_date),
         'to_date': str(to_date),
-        'compare_from_date': str(compare_from_date) if has_compare else None,
-        'compare_to_date': str(compare_to_date) if has_compare else None,
         'filter_mode': filter_mode,
         'account_count': account_count,
 
-        # ── Two sections ──
-        'revenue': revenue_section,
-        'expenses': expenses_section,
+        # ── Five Zoho-style sections ──
+        'operating_income': operating_income,
+        'cost_of_goods_sold': cost_of_goods_sold,
+        'operating_expenses': operating_expenses,
+        'non_operating_income': non_operating_income,
+        'non_operating_expenses': non_operating_expenses,
 
-        # ── Summary totals ──
-        'total_revenue': str(total_revenue),
-        'total_expenses': str(total_expenses),
+        # ── Intermediary totals ──
+        'total_operating_income': str(total_operating_income),
+        'total_cogs': str(total_cogs),
+        'gross_profit': str(gross_profit),
+        'total_operating_expenses': str(total_operating_expenses),
+        'operating_profit': str(operating_profit),
+        'total_non_operating_income': str(total_non_operating_income),
+        'total_non_operating_expenses': str(total_non_operating_expenses),
         'net_income': str(net_income),
 
-        # ── Comparison totals ──
-        'compare_total_revenue': str(compare_total_revenue) if has_compare else None,
-        'compare_total_expenses': str(compare_total_expenses) if has_compare else None,
-        'compare_net_income': str(compare_net_income) if has_compare else None,
-
-        # ── Changes ──
-        'change_revenue': str(change_revenue) if has_compare else None,
-        'change_expenses': str(change_expenses) if has_compare else None,
-        'change_net_income': str(change_net_income) if has_compare else None,
-        'change_revenue_pct': str(change_revenue_pct) if change_revenue_pct is not None else None,
-        'change_expenses_pct': str(change_expenses_pct) if change_expenses_pct is not None else None,
-        'change_net_income_pct': str(change_net_income_pct) if change_net_income_pct is not None else None,
+        # ── Legacy totals ──
+        'total_revenue': str(total_revenue),
+        'total_expenses': str(total_expenses),
 
         # ── Profitability indicator ──
         'is_net_profit': net_income >= ZERO,
     }
+    result.update(compare_data)
+    return result
 
 
 # ══════════════════════════════════════════════════
-# SECTION BUILDER
+# SECTION BUILDER (unchanged)
 # ══════════════════════════════════════════════════
 
 def _build_section(l1_path, root_accounts_by_l3, children_by_parent,
                     class_map, balances, compare_balances, included_ids):
     """
     Build one section (Revenue or Expenses) as a classification tree.
-
-    Identical structure to balance_sheet._build_section():
-        L2 classification > L3 classification > account nodes (infinite depth)
-
-    Returns list of L2 nodes, each containing L3 children, each
-    containing account nodes with recursive sub-account nesting.
+    Returns list of L2 nodes → L3 children → account nodes (infinite depth).
     """
     has_compare = compare_balances is not None
-
-    # Find L3 classifications under this L1 that have included accounts
     needed_l3_ids = set()
     for l3_id, root_accts in root_accounts_by_l3.items():
         for acct in root_accts:
             cls_path = acct.classification.internal_path
-            # Ensure this L3 belongs to the correct L1 section
             if not cls_path.startswith(l1_path + '.'):
                 continue
             if acct.id in included_ids or _has_included_descendant(
                 acct.id, included_ids, children_by_parent
             ):
                 needed_l3_ids.add(l3_id)
-                break  # One qualifying account is enough for this L3
+                break
 
-    # Map L3 IDs to their internal paths
     l3_paths = {}
     for path, cls in class_map.items():
         if cls.id in needed_l3_ids and path.startswith(l1_path + '.'):
             l3_paths[cls.id] = path
 
     needed_l3_path_set = set(l3_paths.values())
-    # Derive which L2 groups are needed (take the first 2 segments of L3 paths)
     needed_l2 = {'.'.join(p.split('.')[:2]) for p in needed_l3_path_set}
 
     section = []
-
     for l2_path in sorted(needed_l2):
         l2_cls = class_map.get(l2_path)
         if not l2_cls:
             continue
-
         l2_node = {
             'name': l2_cls.name,
             'classification_path': l2_path,
@@ -338,14 +316,12 @@ def _build_section(l1_path, root_accounts_by_l3, children_by_parent,
             l2_node['compare_subtotal_debit'] = ZERO
             l2_node['compare_subtotal_credit'] = ZERO
 
-        # Iterate L3 classifications under this L2
         for l3_path in sorted(
             p for p in needed_l3_path_set if p.startswith(l2_path + '.')
         ):
             l3_cls = class_map.get(l3_path)
             if not l3_cls:
                 continue
-
             l3_node = {
                 'name': l3_cls.name,
                 'classification_path': l3_path,
@@ -357,7 +333,6 @@ def _build_section(l1_path, root_accounts_by_l3, children_by_parent,
                 l3_node['compare_subtotal_debit'] = ZERO
                 l3_node['compare_subtotal_credit'] = ZERO
 
-            # Build account trees under this L3
             for root_acct in root_accounts_by_l3.get(l3_cls.id, []):
                 acct_node = _build_account_node(
                     root_acct, children_by_parent, balances,
@@ -366,7 +341,6 @@ def _build_section(l1_path, root_accounts_by_l3, children_by_parent,
                 if acct_node is None:
                     continue
                 l3_node['accounts'].append(acct_node)
-                # Roll up child subtotals into L3
                 l3_node['subtotal_debit'] += acct_node['subtotal_debit']
                 l3_node['subtotal_credit'] += acct_node['subtotal_credit']
                 if has_compare:
@@ -375,81 +349,57 @@ def _build_section(l1_path, root_accounts_by_l3, children_by_parent,
 
             if not l3_node['accounts']:
                 continue
-
-            # Roll up L3 subtotals into L2
             l2_node['subtotal_debit'] += l3_node['subtotal_debit']
             l2_node['subtotal_credit'] += l3_node['subtotal_credit']
             if has_compare:
                 l2_node['compare_subtotal_debit'] += l3_node['compare_subtotal_debit']
                 l2_node['compare_subtotal_credit'] += l3_node['compare_subtotal_credit']
-
             l2_node['children'].append(l3_node)
 
         if not l2_node['children']:
             continue
-
         section.append(l2_node)
 
     return section
 
 
-# ══════════════════════════════════════════════════
-# SECTION TOTAL CALCULATOR
-# ══════════════════════════════════════════════════
-
 def _sum_section_total(section, compare=False):
-    """
-    Calculate the raw net total (debit − credit) for a section.
-
-    Returns the same (debit − credit) convention as the balance engine:
-        Revenue section:  raw net is typically NEGATIVE (credit-heavy)
-        Expense section:  raw net is typically POSITIVE (debit-heavy)
-
-    The caller handles sign interpretation:
-        total_revenue  = -_sum_section_total(revenue_section)
-        total_expenses =  _sum_section_total(expenses_section)
-    """
+    """Calculate raw net total (debit − credit) for a section."""
     total_debit = ZERO
     total_credit = ZERO
-
     for l2_node in section:
         d = l2_node.get('subtotal_debit', ZERO)
         c = l2_node.get('subtotal_credit', ZERO)
-
-        # Handle both Decimal and string (depends on call timing)
-        if isinstance(d, str):
-            d = Decimal(d)
-        if isinstance(c, str):
-            c = Decimal(c)
-
+        if isinstance(d, str): d = Decimal(d)
+        if isinstance(c, str): c = Decimal(c)
         if compare:
             cd = l2_node.get('compare_subtotal_debit', ZERO)
             cc = l2_node.get('compare_subtotal_credit', ZERO)
-            if isinstance(cd, str):
-                cd = Decimal(cd)
-            if isinstance(cc, str):
-                cc = Decimal(cc)
+            if isinstance(cd, str): cd = Decimal(cd)
+            if isinstance(cc, str): cc = Decimal(cc)
             total_debit += cd
             total_credit += cc
         else:
             total_debit += d
             total_credit += c
-
     return total_debit - total_credit
 
 
-# ══════════════════════════════════════════════════
-# STRINGIFY HELPERS
-# ══════════════════════════════════════════════════
-
-def _stringify_section(section, has_compare):
+def _stringify_section(section, has_compare, debit_positive=True):
     """
-    Convert all Decimal values in a section tree to strings.
+    Convert Decimals to strings and add a signed 'amount' field.
 
-    Mirrors balance_sheet._stringify_section() exactly — single
-    stringify pass at the end to avoid repeated Decimal→str conversion.
+    Sign convention (ensures accounts add up to L3 totals):
+        debit_positive=True  (EXPENSE sections):
+            L2/L3 amount = dr − cr;  account: own_debit→ +, own_credit→ −
+        debit_positive=False (REVENUE sections):
+            L2/L3 amount = cr − dr;  account: own_credit→ +, own_debit→ −
     """
     for l2_node in section:
+        dr = l2_node['subtotal_debit'] if isinstance(l2_node['subtotal_debit'], Decimal) else Decimal(str(l2_node['subtotal_debit']))
+        cr = l2_node['subtotal_credit'] if isinstance(l2_node['subtotal_credit'], Decimal) else Decimal(str(l2_node['subtotal_credit']))
+        l2_node['amount'] = str(dr - cr) if debit_positive else str(cr - dr)
+
         l2_node['subtotal_debit'] = str(l2_node['subtotal_debit'])
         l2_node['subtotal_credit'] = str(l2_node['subtotal_credit'])
         if has_compare and 'compare_subtotal_debit' in l2_node:
@@ -457,6 +407,12 @@ def _stringify_section(section, has_compare):
             l2_node['compare_subtotal_credit'] = str(l2_node['compare_subtotal_credit'])
 
         for l3_node in l2_node.get('children', []):
+            l3_dr = l3_node.get('subtotal_debit', ZERO)
+            l3_cr = l3_node.get('subtotal_credit', ZERO)
+            if isinstance(l3_dr, str): l3_dr = Decimal(l3_dr)
+            if isinstance(l3_cr, str): l3_cr = Decimal(l3_cr)
+            l3_node['amount'] = str(l3_dr - l3_cr) if debit_positive else str(l3_cr - l3_dr)
+
             if isinstance(l3_node.get('subtotal_debit'), Decimal):
                 l3_node['subtotal_debit'] = str(l3_node['subtotal_debit'])
                 l3_node['subtotal_credit'] = str(l3_node['subtotal_credit'])
@@ -464,21 +420,75 @@ def _stringify_section(section, has_compare):
                 l3_node['compare_subtotal_debit'] = str(l3_node['compare_subtotal_debit'])
                 l3_node['compare_subtotal_credit'] = str(l3_node['compare_subtotal_credit'])
 
-            # Reuse the shared recursive account stringifier
+            _add_amount_to_accounts(l3_node.get('accounts', []), debit_positive)
             _stringify_accounts(l3_node.get('accounts', []), has_compare)
 
 
-# ══════════════════════════════════════════════════
-# PERCENTAGE CHANGE HELPER
-# ══════════════════════════════════════════════════
+def _add_amount_to_accounts(accounts, debit_positive=True):
+    """
+    Recursively add a signed 'amount' field to each account node.
+
+    debit_positive=True  (EXPENSE): own_debit → +, own_credit → −
+    debit_positive=False (REVENUE): own_credit → +, own_debit → −
+    """
+    for acct in accounts:
+        own_dr = acct.get('own_debit_balance')
+        own_cr = acct.get('own_credit_balance')
+        if debit_positive:
+            if own_dr is not None:
+                acct['amount'] = str(own_dr)
+            elif own_cr is not None:
+                acct['amount'] = str(-Decimal(str(own_cr)))
+            else:
+                acct['amount'] = None
+        else:
+            if own_cr is not None:
+                acct['amount'] = str(own_cr)
+            elif own_dr is not None:
+                acct['amount'] = str(-Decimal(str(own_dr)))
+            else:
+                acct['amount'] = None
+        _add_amount_to_accounts(acct.get('children', []), debit_positive)
+
 
 def _pct_change(current, previous):
-    """
-    Calculate percentage change: ((current − previous) / |previous|) × 100.
-
-    Returns Decimal rounded to 2 places, or None if previous is zero
-    (division by zero → undefined percentage change).
-    """
+    """Percentage change: ((current − previous) / |previous|) × 100."""
     if previous == ZERO:
         return None
     return ((current - previous) / abs(previous) * 100).quantize(Decimal('0.01'))
+
+
+# ══════════════════════════════════════════════════
+# DR/CR FIELD STRIPPER (Zoho-style clean JSON)
+# ══════════════════════════════════════════════════
+
+# Fields to remove from P&L nodes — the 'amount' field replaces these
+_DR_CR_FIELDS = {
+    'subtotal_debit', 'subtotal_credit',
+    'own_debit_balance', 'own_credit_balance',
+    'compare_subtotal_debit', 'compare_subtotal_credit',
+    'compare_own_debit_balance', 'compare_own_credit_balance',
+}
+
+
+def _strip_dr_cr_from_section(section):
+    """
+    Remove all debit/credit field pairs from a P&L section tree.
+    Called after 'amount' is set on every node, so the data is not lost.
+    This gives the frontend a clean Zoho-style JSON with only 'amount'.
+    """
+    for l2_node in section:
+        for field in _DR_CR_FIELDS:
+            l2_node.pop(field, None)
+        for l3_node in l2_node.get('children', []):
+            for field in _DR_CR_FIELDS:
+                l3_node.pop(field, None)
+            _strip_dr_cr_from_accounts(l3_node.get('accounts', []))
+
+
+def _strip_dr_cr_from_accounts(accounts):
+    """Recursively strip debit/credit fields from account nodes."""
+    for acct in accounts:
+        for field in _DR_CR_FIELDS:
+            acct.pop(field, None)
+        _strip_dr_cr_from_accounts(acct.get('children', []))

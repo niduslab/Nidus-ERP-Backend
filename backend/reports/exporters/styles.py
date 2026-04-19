@@ -34,8 +34,8 @@ COLOUR_NEGATIVE = 'B71C1C'      # Negative values / loss (dark red)
 # Each layer gets a distinct colour so users can visually scan
 # the hierarchy without needing indentation alone.
 COLOUR_L1 = '1A237E'            # Deep indigo — L1 elements (Asset, Liability, etc.)
-COLOUR_L2 = '1565C0'            # Strong blue  — L2 categories (Current Asset, etc.)
-COLOUR_L3 = '00695C'            # Dark teal    — L3 groups (Cash, Bank, Inventory, etc.)
+COLOUR_L2 = '00695C'            # Strong blue  — L2 categories (Current Asset, etc.)
+COLOUR_L3 = '1565C0'            # Dark teal    — L3 groups (Cash, Bank, Inventory, etc.)
 COLOUR_TOTAL = '1A237E'         # Deep indigo  — Total/summary rows
 
 
@@ -102,6 +102,38 @@ def to_decimal(value):
         return Decimal(str(value))
     except Exception:
         return Decimal('0.00')
+
+
+def pl_account_amount(acct):
+    """
+    Return the single display amount for a P&L account.
+    Prefers the pre-computed 'amount' field, falls back to own_balance fields.
+    """
+    # Pre-computed amount (set by _stringify_section in income_statement.py)
+    amt = acct.get('amount')
+    if amt is not None:
+        return to_decimal(amt)
+    # Fallback to raw balance fields
+    own_dr = acct.get('own_debit_balance')
+    own_cr = acct.get('own_credit_balance')
+    if own_dr is not None:
+        return to_decimal(own_dr)
+    if own_cr is not None:
+        return to_decimal(own_cr)
+    return None
+
+
+def pl_l3_amount(l3):
+    """
+    Return the single net display amount for a P&L L3 classification.
+    Prefers the pre-computed 'amount' field, falls back to subtotal fields.
+    """
+    amt = l3.get('amount')
+    if amt is not None:
+        return to_decimal(amt)
+    dr = to_decimal(l3.get('subtotal_debit'))
+    cr = to_decimal(l3.get('subtotal_credit'))
+    return abs(dr - cr)
 
 
 def build_header_info(report_data):

@@ -29,7 +29,7 @@ from .styles import (
     COLOUR_PRIMARY, COLOUR_TEXT, COLOUR_TEXT_LIGHT,
     FONT_NAME, FONT_SIZE_TITLE, FONT_SIZE_SUBTITLE, FONT_SIZE_HEADER, FONT_SIZE_BODY,
     EXCEL_NUMBER_FORMAT,
-    to_decimal, build_header_info,
+    to_decimal, build_header_info, pl_account_amount, pl_l3_amount,
 )
 
 
@@ -277,51 +277,48 @@ def _render_balance_sheet(data):
     info = build_header_info(data)
     row = _write_header_block(ws, info)
 
-    headers = ['Account', 'Code', 'Debit', 'Credit']
-    widths = [40, 14, 18, 18]
+    # Single Amount column (Zoho-style)
+    headers = ['Account', 'Code', 'Amount']
+    widths = [45, 14, 20]
     row = _write_table_headers(ws, row, headers, widths)
     ws.freeze_panes = 'A{}'.format(row)
-    amount_cols = {3, 4}
+    amount_cols = {3}
 
     # Assets and Liabilities sections
     for section_name, section_key, total_key in [
         ('ASSETS', 'assets', 'total_assets'),
         ('LIABILITIES', 'liabilities', 'total_liabilities'),
     ]:
-        row = _write_data_row(ws, row, [section_name, '', '', ''], is_section=True)
-        row = _write_section_tree(ws, row, data.get(section_key, []), amount_cols)
-        # Section subtotal
+        row = _write_data_row(ws, row, [section_name, '', ''], is_section=True)
+        row = _write_bs_section_tree(ws, row, data.get(section_key, []), amount_cols)
         row = _write_data_row(ws, row,
-            ['Total {}'.format(section_name.title()), '', data.get(total_key), ''],
+            ['Total {}'.format(section_name.title()), '', data.get(total_key)],
             is_subtotal=True, amount_cols=amount_cols)
         row += 1
 
-    # Equity section — handled separately because retained earnings
-    # must appear BEFORE the total equity line
-    row = _write_data_row(ws, row, ['EQUITY', '', '', ''], is_section=True)
-    row = _write_section_tree(ws, row, data.get('equity', []), amount_cols)
+    # Equity section — retained earnings before total
+    row = _write_data_row(ws, row, ['EQUITY', '', ''], is_section=True)
+    row = _write_bs_section_tree(ws, row, data.get('equity', []), amount_cols)
 
-    # Retained earnings auto (part of equity, before total)
     re_auto = data.get('retained_earnings_auto', {})
     row = _write_data_row(ws, row,
-        ['  Current Year Net Income (auto)', '', re_auto.get('current_year_earnings'), ''],
+        ['  Current Year Net Income (auto)', '', re_auto.get('current_year_earnings')],
         is_subtotal=True, amount_cols=amount_cols)
     row = _write_data_row(ws, row,
-        ['  Prior Year Retained (auto)', '', re_auto.get('prior_year_retained'), ''],
+        ['  Prior Year Retained (auto)', '', re_auto.get('prior_year_retained')],
         is_subtotal=True, amount_cols=amount_cols)
 
-    # Total Equity (accounts + retained earnings)
     row = _write_data_row(ws, row,
-        ['Total Equity', '', data.get('total_equity'), ''],
+        ['Total Equity', '', data.get('total_equity')],
         is_subtotal=True, amount_cols=amount_cols)
     row += 1
 
-    # Totals
+    # Grand totals
     row = _write_data_row(ws, row,
-        ['Total Assets', '', data.get('total_assets'), ''],
+        ['Total Assets', '', data.get('total_assets')],
         is_total=True, amount_cols=amount_cols)
     row = _write_data_row(ws, row,
-        ['Total Liabilities & Equity', '', data.get('total_liabilities_and_equity'), ''],
+        ['Total Liabilities & Equity', '', data.get('total_liabilities_and_equity')],
         is_total=True, amount_cols=amount_cols)
 
     balanced = 'YES' if data.get('is_balanced') else 'NO'
@@ -330,18 +327,19 @@ def _render_balance_sheet(data):
     return _to_bytes(wb)
 
 
-def _write_section_tree(ws, row, section, amount_cols):
-    """Write L2 > L3 > account tree for Balance Sheet / Income Statement sections."""
+def _write_bs_section_tree(ws, row, section, amount_cols):
+    """Write L2 > L3 > account tree with single Amount column for Balance Sheet."""
     alt = False
     for l2 in section:
-        row = _write_data_row(ws, row, ['  ' + l2['name'], '', '', ''], is_section=True)
+        row = _write_data_row(ws, row, ['  ' + l2['name'], '', ''], is_section=True)
         for l3 in l2.get('children', []):
+            l3_amt = pl_l3_amount(l3)
             row = _write_data_row(ws, row,
-                ['    ' + l3['name'], '', l3.get('subtotal_debit'), l3.get('subtotal_credit')],
+                ['    ' + l3['name'], '', l3_amt],
                 is_subtotal=True, amount_cols=amount_cols)
             for acct in l3.get('accounts', []):
                 alt = not alt
-                row, alt = _write_account_recursive(ws, row, acct, 3, alt, amount_cols)
+                row, alt = _write_pl_account_recursive(ws, row, acct, 3, alt, amount_cols)
     return row
 
 
@@ -371,8 +369,50 @@ def _write_account_recursive(ws, row, acct, depth, alt, amount_cols):
 
 
 # ══════════════════════════════════════════════════
-# INCOME STATEMENT
+# INCOME STATEMENT (Zoho Books-style P&L — single Amount column)
 # ══════════════════════════════════════════════════
+
+def _write_pl_account_recursive(ws, row, acct, depth, alt, amount_cols):
+    """
+    Recursively write a P&L account row with a single Amount column.
+    Shows own_balance as a single positive number (sign is handled by totals).
+    Skips zero-balance intermediary accounts.
+    """
+    amt = pl_account_amount(acct)
+    if amt is not None:
+        indent = '  ' * depth
+        row = _write_data_row(ws, row,
+            [indent + acct.get('name', ''), acct.get('code', ''), amt],
+            is_alt=alt, amount_cols=amount_cols)
+
+    for child in acct.get('children', []):
+        alt = not alt
+        row, alt = _write_pl_account_recursive(ws, row, child, depth + 1, alt, amount_cols)
+
+    return row, alt
+
+
+def _write_pl_section(ws, row, section_name, section_data, amount_cols):
+    """
+    Write one P&L section with single Amount column.
+    Shows L3 groups with net amount + accounts with own balance.
+    """
+    row = _write_data_row(ws, row, [section_name, '', ''], is_section=True)
+    alt = False
+    for l2 in section_data:
+        for l3 in l2.get('children', []):
+            # L3 classification with net amount
+            l3_amt = pl_l3_amount(l3)
+            row = _write_data_row(ws, row,
+                ['  ' + l3['name'], '', l3_amt],
+                is_subtotal=True, amount_cols=amount_cols)
+            # Accounts under L3 (recursive, single amount)
+            for acct in l3.get('accounts', []):
+                alt = not alt
+                row, alt = _write_pl_account_recursive(
+                    ws, row, acct, 2, alt, amount_cols)
+    return row
+
 
 def _render_income_statement(data):
     wb = Workbook()
@@ -381,31 +421,68 @@ def _render_income_statement(data):
     info = build_header_info(data)
     row = _write_header_block(ws, info)
 
-    headers = ['Account', 'Code', 'Debit', 'Credit']
-    widths = [40, 14, 18, 18]
+    # Single Amount column instead of Debit + Credit
+    headers = ['Account', 'Code', 'Amount']
+    widths = [45, 14, 20]
     row = _write_table_headers(ws, row, headers, widths)
     ws.freeze_panes = 'A{}'.format(row)
-    amount_cols = {3, 4}
+    amount_cols = {3}
 
-    # Revenue section
-    row = _write_data_row(ws, row, ['REVENUE', '', '', ''], is_section=True)
-    row = _write_section_tree(ws, row, data.get('revenue', []), amount_cols)
+    # ── Operating Income ──
+    row = _write_pl_section(ws, row, 'OPERATING INCOME',
+                            data.get('operating_income', []), amount_cols)
     row = _write_data_row(ws, row,
-        ['Total Revenue', '', data.get('total_revenue'), ''],
+        ['Total Operating Income', '', data.get('total_operating_income')],
         is_subtotal=True, amount_cols=amount_cols)
     row += 1
 
-    # Expenses section
-    row = _write_data_row(ws, row, ['EXPENSES', '', '', ''], is_section=True)
-    row = _write_section_tree(ws, row, data.get('expenses', []), amount_cols)
+    # ── Cost of Goods Sold ──
+    row = _write_pl_section(ws, row, 'COST OF GOODS SOLD',
+                            data.get('cost_of_goods_sold', []), amount_cols)
     row = _write_data_row(ws, row,
-        ['Total Expenses', '', data.get('total_expenses'), ''],
+        ['Total Cost of Goods Sold', '', data.get('total_cogs')],
         is_subtotal=True, amount_cols=amount_cols)
     row += 1
 
-    # Net Income
+    # ── Gross Profit ──
     row = _write_data_row(ws, row,
-        ['NET INCOME', '', data.get('net_income'), ''],
+        ['GROSS PROFIT', '', data.get('gross_profit')],
+        is_total=True, amount_cols=amount_cols)
+    row += 1
+
+    # ── Operating Expenses ──
+    row = _write_pl_section(ws, row, 'OPERATING EXPENSES',
+                            data.get('operating_expenses', []), amount_cols)
+    row = _write_data_row(ws, row,
+        ['Total Operating Expenses', '', data.get('total_operating_expenses')],
+        is_subtotal=True, amount_cols=amount_cols)
+    row += 1
+
+    # ── Operating Profit ──
+    row = _write_data_row(ws, row,
+        ['OPERATING PROFIT', '', data.get('operating_profit')],
+        is_total=True, amount_cols=amount_cols)
+    row += 1
+
+    # ── Non-Operating Income ──
+    row = _write_pl_section(ws, row, 'NON-OPERATING INCOME',
+                            data.get('non_operating_income', []), amount_cols)
+    row = _write_data_row(ws, row,
+        ['Total Non-Operating Income', '', data.get('total_non_operating_income')],
+        is_subtotal=True, amount_cols=amount_cols)
+    row += 1
+
+    # ── Non-Operating Expenses ──
+    row = _write_pl_section(ws, row, 'NON-OPERATING EXPENSES',
+                            data.get('non_operating_expenses', []), amount_cols)
+    row = _write_data_row(ws, row,
+        ['Total Non-Operating Expenses', '', data.get('total_non_operating_expenses')],
+        is_subtotal=True, amount_cols=amount_cols)
+    row += 1
+
+    # ── Net Profit / Loss ──
+    row = _write_data_row(ws, row,
+        ['NET PROFIT / LOSS', '', data.get('net_income')],
         is_total=True, amount_cols=amount_cols)
 
     return _to_bytes(wb)
@@ -422,40 +499,43 @@ def _render_general_ledger(data):
     info = build_header_info(data)
     row = _write_header_block(ws, info)
 
-    headers = ['Date', 'Account Code', 'Account Name', 'Dr/Cr', 'Amount',
-               'Base Amount', 'Running Balance', 'Note', 'Journal Type']
-    widths = [14, 14, 30, 8, 16, 16, 18, 30, 14]
+    headers = ['Date', 'Account Code', 'Account Name', 'Debit', 'Credit',
+               'Running Balance', 'Note', 'Journal Type']
+    widths = [14, 14, 30, 16, 16, 18, 30, 14]
     row = _write_table_headers(ws, row, headers, widths)
     ws.freeze_panes = 'A{}'.format(row)
-    amount_cols = {5, 6, 7}
+    amount_cols = {4, 5, 6}
     alt = False
 
     for account in data.get('accounts', []):
         # Account header row
         row = _write_data_row(ws, row,
             ['', account['code'], account['name'],
-             '', '', '', account.get('opening_balance'), 'Opening Balance', ''],
+             '', '', account.get('opening_balance'), 'Opening Balance', ''],
             is_section=True, amount_cols=amount_cols)
 
         for txn in account.get('transactions', []):
             alt = not alt
+            # Split entry_type + base_amount into separate Debit/Credit cells
+            dr_val = txn.get('debit')
+            cr_val = txn.get('credit')
             row = _write_data_row(ws, row,
                 [txn.get('date'), account['code'], account['name'],
-                 txn.get('entry_type'), txn.get('base_amount'), txn.get('base_amount'),
+                 dr_val, cr_val,
                  txn.get('running_balance'), txn.get('note'), txn.get('journal_type')],
                 is_alt=alt, amount_cols=amount_cols)
 
         # Closing row
         row = _write_data_row(ws, row,
             ['', account['code'], account['name'],
-             '', account.get('total_debit'), account.get('total_credit'),
+             account.get('total_debit'), account.get('total_credit'),
              account.get('closing_balance'), 'Closing Balance', ''],
             is_subtotal=True, amount_cols=amount_cols)
         row += 1  # Blank row between accounts
 
     # Grand totals
     row = _write_data_row(ws, row,
-        ['GRAND TOTAL', '', '', '',
+        ['GRAND TOTAL', '', '',
          data.get('grand_total_debit'), data.get('grand_total_credit'), '', '', ''],
         is_total=True, amount_cols=amount_cols)
 
@@ -481,12 +561,12 @@ def _render_account_transactions(data):
             )).font = _FONT_BOLD
     row += 2
 
-    headers = ['Date', 'Source #', 'Description', 'Reference', 'Dr/Cr',
-               'Amount', 'Running Balance', 'Type']
-    widths = [14, 14, 35, 18, 8, 16, 18, 14]
+    headers = ['Date', 'Source #', 'Description', 'Reference', 'Debit',
+               'Credit', 'Running Balance', 'Type']
+    widths = [14, 14, 35, 18, 16, 16, 18, 14]
     row = _write_table_headers(ws, row, headers, widths)
     ws.freeze_panes = 'A{}'.format(row)
-    amount_cols = {6, 7}
+    amount_cols = {5, 6, 7}
 
     # Opening balance row
     row = _write_data_row(ws, row,
@@ -496,26 +576,21 @@ def _render_account_transactions(data):
     alt = False
     for txn in data.get('transactions', []):
         alt = not alt
+        dr_val = txn.get('debit')
+        cr_val = txn.get('credit')
         row = _write_data_row(ws, row,
             [txn.get('date'), txn.get('source_number'), txn.get('source_description'),
-             txn.get('source_reference'), txn.get('entry_type'),
-             txn.get('base_amount'), txn.get('running_balance'), txn.get('journal_type')],
+             txn.get('source_reference'), dr_val,
+             cr_val, txn.get('running_balance'), txn.get('journal_type')],
             is_alt=alt, amount_cols=amount_cols)
 
     # Closing balance row
     row += 1
     row = _write_data_row(ws, row,
-        ['', '', 'Closing Balance', '', '',
-         '', data.get('closing_balance'), ''],
+        ['', '', 'Closing Balance', '',
+         data.get('total_debit'), data.get('total_credit'),
+         data.get('closing_balance'), ''],
         is_total=True, amount_cols=amount_cols)
-
-    # Totals
-    row = _write_data_row(ws, row,
-        ['', '', 'Total Debit', '', '', data.get('total_debit'), '', ''],
-        is_subtotal=True, amount_cols=amount_cols)
-    row = _write_data_row(ws, row,
-        ['', '', 'Total Credit', '', '', data.get('total_credit'), '', ''],
-        is_subtotal=True, amount_cols=amount_cols)
 
     return _to_bytes(wb)
 
@@ -604,22 +679,24 @@ def _render_journal_entries(data):
     row = _write_header_block(ws, info)
 
     headers = ['Entry #', 'Date', 'Status', 'Type', 'Description', 'Reference',
-               'Account Code', 'Account Name', 'Dr/Cr', 'Amount']
-    widths = [14, 14, 10, 14, 35, 18, 14, 30, 8, 16]
+               'Account Code', 'Account Name', 'Debit', 'Credit']
+    widths = [14, 14, 10, 14, 35, 18, 14, 30, 16, 16]
     row = _write_table_headers(ws, row, headers, widths)
     ws.freeze_panes = 'A{}'.format(row)
-    amount_cols = {10}
+    amount_cols = {9, 10}
     alt = False
 
     for journal in data.get('journals', []):
         for line in journal.get('lines', []):
             alt = not alt
+            dr_val = line.get('amount') if line.get('entry_type') == 'DEBIT' else None
+            cr_val = line.get('amount') if line.get('entry_type') == 'CREDIT' else None
             row = _write_data_row(ws, row,
                 [journal.get('entry_number'), journal.get('date'),
                  journal.get('status'), journal.get('journal_type'),
                  journal.get('description'), journal.get('reference'),
                  line.get('account_code'), line.get('account_name'),
-                 line.get('entry_type'), line.get('amount')],
+                 dr_val, cr_val],
                 is_alt=alt, amount_cols=amount_cols)
 
     return _to_bytes(wb)

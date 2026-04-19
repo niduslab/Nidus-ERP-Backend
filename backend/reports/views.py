@@ -492,14 +492,26 @@ class IncomeStatementView(APIView):
             'account_count': report['account_count'],
             'generated_at': datetime.now().isoformat(),
 
-            # Two sections with account trees
-            'revenue': report['revenue'],
-            'expenses': report['expenses'],
+            # ── Five Zoho-style P&L sections ──
+            'operating_income': report['operating_income'],
+            'cost_of_goods_sold': report['cost_of_goods_sold'],
+            'operating_expenses': report['operating_expenses'],
+            'non_operating_income': report['non_operating_income'],
+            'non_operating_expenses': report['non_operating_expenses'],
 
-            # Summary totals
+            # ── Intermediary totals ──
+            'total_operating_income': report['total_operating_income'],
+            'total_cogs': report['total_cogs'],
+            'gross_profit': report['gross_profit'],
+            'total_operating_expenses': report['total_operating_expenses'],
+            'operating_profit': report['operating_profit'],
+            'total_non_operating_income': report['total_non_operating_income'],
+            'total_non_operating_expenses': report['total_non_operating_expenses'],
+            'net_income': report['net_income'],
+
+            # ── Legacy totals ──
             'total_revenue': report['total_revenue'],
             'total_expenses': report['total_expenses'],
-            'net_income': report['net_income'],
 
             # Profitability indicator
             'is_net_profit': report['is_net_profit'],
@@ -507,17 +519,17 @@ class IncomeStatementView(APIView):
 
         # Add comparison data if applicable
         if has_compare:
-            data['compare_from_date'] = report['compare_from_date']
-            data['compare_to_date'] = report['compare_to_date']
-            data['compare_total_revenue'] = report['compare_total_revenue']
-            data['compare_total_expenses'] = report['compare_total_expenses']
-            data['compare_net_income'] = report['compare_net_income']
-            data['change_revenue'] = report['change_revenue']
-            data['change_expenses'] = report['change_expenses']
-            data['change_net_income'] = report['change_net_income']
-            data['change_revenue_pct'] = report['change_revenue_pct']
-            data['change_expenses_pct'] = report['change_expenses_pct']
-            data['change_net_income_pct'] = report['change_net_income_pct']
+            for key in [
+                'compare_from_date', 'compare_to_date',
+                'compare_total_operating_income', 'compare_total_cogs',
+                'compare_gross_profit', 'compare_total_operating_expenses',
+                'compare_operating_profit', 'compare_total_non_operating_income',
+                'compare_total_non_operating_expenses', 'compare_net_income',
+                'compare_total_revenue', 'compare_total_expenses',
+                'change_net_income', 'change_net_income_pct',
+            ]:
+                if key in report:
+                    data[key] = report[key]
 
         return Response({'success': True, 'data': data}, status=status.HTTP_200_OK)
 

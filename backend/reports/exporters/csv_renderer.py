@@ -55,10 +55,10 @@ def _render_general_ledger(data):
     output = io.StringIO()
     writer = csv.writer(output)
 
-    # Header row
+    # Header row — separate Debit and Credit columns
     writer.writerow([
-        'Account Code', 'Account Name', 'Date', 'Entry Type',
-        'Amount', 'Base Amount', 'Running Balance',
+        'Account Code', 'Account Name', 'Date', 'Debit',
+        'Credit', 'Running Balance',
         'Note', 'Journal Type', 'Source Module',
     ])
 
@@ -66,15 +66,17 @@ def _render_general_ledger(data):
         # Opening balance row
         writer.writerow([
             account['code'], account['name'], '',
-            '', '', '', account.get('opening_balance'),
+            '', '', account.get('opening_balance'),
             'Opening Balance', '', '',
         ])
 
-        # Transaction rows
+        # Transaction rows — split by entry_type into Debit/Credit cells
         for txn in account.get('transactions', []):
+            dr_val = txn.get('debit', '')
+            cr_val = txn.get('credit', '')
             writer.writerow([
                 account['code'], account['name'], txn.get('date'),
-                txn.get('entry_type'), txn.get('base_amount'), txn.get('base_amount'),
+                dr_val, cr_val,
                 txn.get('running_balance'), txn.get('note'),
                 txn.get('journal_type'), txn.get('source_module'),
             ])
@@ -82,7 +84,7 @@ def _render_general_ledger(data):
         # Closing balance row
         writer.writerow([
             account['code'], account['name'], '',
-            '', account.get('total_debit'), account.get('total_credit'),
+            account.get('total_debit'), account.get('total_credit'),
             account.get('closing_balance'), 'Closing Balance', '', '',
         ])
 
@@ -99,34 +101,36 @@ def _render_account_transactions(data):
 
     acct = data.get('account', {})
 
-    # Header row
+    # Header row — separate Debit and Credit columns
     writer.writerow([
         'Date', 'Source Number', 'Source Description', 'Source Reference',
-        'Entry Type', 'Amount', 'Currency', 'Base Amount',
+        'Debit', 'Credit', 'Currency',
         'Running Balance', 'Journal Type', 'Source Module',
     ])
 
     # Opening balance
     writer.writerow([
         '', '', 'Opening Balance', '',
-        '', '', '', '',
+        '', '', '',
         data.get('opening_balance'), '', '',
     ])
 
-    # Transaction rows
+    # Transaction rows — split by entry_type
     for txn in data.get('transactions', []):
+        dr_val = txn.get('debit', '')
+        cr_val = txn.get('credit', '')
         writer.writerow([
             txn.get('date'), txn.get('source_number'),
             txn.get('source_description'), txn.get('source_reference'),
-            txn.get('entry_type'), txn.get('amount'), txn.get('currency'),
-            txn.get('base_amount'), txn.get('running_balance'),
+            dr_val, cr_val, txn.get('currency'),
+            txn.get('running_balance'),
             txn.get('journal_type'), txn.get('source_module'),
         ])
 
     # Closing balance
     writer.writerow([
         '', '', 'Closing Balance', '',
-        '', '', '', '',
+        data.get('total_debit'), data.get('total_credit'), '',
         data.get('closing_balance'), '', '',
     ])
 
@@ -141,22 +145,26 @@ def _render_journal_entries(data):
     output = io.StringIO()
     writer = csv.writer(output)
 
-    # Header row
+    # Header row — separate Debit and Credit columns
     writer.writerow([
         'Entry Number', 'Date', 'Status', 'Journal Type',
         'Description', 'Reference', 'Currency', 'Exchange Rate',
-        'Account Code', 'Account Name', 'Entry Type', 'Amount',
+        'Account Code', 'Account Name', 'Debit', 'Credit',
     ])
 
     for journal in data.get('journals', []):
         for line in journal.get('lines', []):
+            dr_val = line.get('amount') if line.get('entry_type') == 'DEBIT' else ''
+            cr_val = line.get('amount') if line.get('entry_type') == 'CREDIT' else ''
             writer.writerow([
                 journal.get('entry_number'), journal.get('date'),
                 journal.get('status'), journal.get('journal_type'),
                 journal.get('description'), journal.get('reference'),
                 journal.get('currency'), journal.get('exchange_rate'),
                 line.get('account_code'), line.get('account_name'),
-                line.get('entry_type'), line.get('amount'),
+                dr_val, cr_val,
             ])
 
     return _to_bytes(output)
+
+

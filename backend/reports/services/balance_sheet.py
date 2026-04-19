@@ -236,10 +236,16 @@ def generate_balance_sheet(company, as_of_date, filter_mode=FILTER_NON_ZERO,
         )
         compare_total_liabilities_and_equity = compare_total_liabilities + compare_total_equity
 
-    # ── Step 10: Stringify all sections ──
-    _stringify_section(assets_section, has_compare)
-    _stringify_section(liabilities_section, has_compare)
-    _stringify_section(equity_section, has_compare)
+    # ── Step 10: Stringify all sections and add signed 'amount' field ──
+    # Assets are debit-normal: own_debit → +, own_credit → −
+    # Liabilities/Equity are credit-normal: own_credit → +, own_debit → −
+    _stringify_section(assets_section, has_compare, debit_positive=True)
+    _stringify_section(liabilities_section, has_compare, debit_positive=False)
+    _stringify_section(equity_section, has_compare, debit_positive=False)
+
+    # ── Step 11: Strip Dr/Cr fields — BS uses single 'amount' only ──
+    for section in [assets_section, liabilities_section, equity_section]:
+        _strip_dr_cr_from_section(section)
 
     # Count included accounts
     account_count = len([a for a in bs_accounts if a.id in included_ids])
@@ -398,9 +404,21 @@ def _build_section(l1_path, root_accounts_by_l3, children_by_parent,
     return section
 
 
-def _stringify_section(section, has_compare):
-    """Convert all Decimal values in a section tree to strings."""
+def _stringify_section(section, has_compare, debit_positive=True):
+    """
+    Convert Decimals to strings and add a signed 'amount' field.
+
+    Sign convention (ensures accounts add up to L3 totals):
+        debit_positive=True  (ASSET sections):
+            L2/L3 amount = dr − cr;  account: own_debit→ +, own_credit→ −
+        debit_positive=False (LIABILITY/EQUITY sections):
+            L2/L3 amount = cr − dr;  account: own_credit→ +, own_debit→ −
+    """
     for l2_node in section:
+        dr = l2_node['subtotal_debit'] if isinstance(l2_node['subtotal_debit'], Decimal) else Decimal(str(l2_node['subtotal_debit']))
+        cr = l2_node['subtotal_credit'] if isinstance(l2_node['subtotal_credit'], Decimal) else Decimal(str(l2_node['subtotal_credit']))
+        l2_node['amount'] = str(dr - cr) if debit_positive else str(cr - dr)
+
         l2_node['subtotal_debit'] = str(l2_node['subtotal_debit'])
         l2_node['subtotal_credit'] = str(l2_node['subtotal_credit'])
         if has_compare and 'compare_subtotal_debit' in l2_node:
@@ -408,6 +426,12 @@ def _stringify_section(section, has_compare):
             l2_node['compare_subtotal_credit'] = str(l2_node['compare_subtotal_credit'])
 
         for l3_node in l2_node.get('children', []):
+            l3_dr = l3_node.get('subtotal_debit', ZERO)
+            l3_cr = l3_node.get('subtotal_credit', ZERO)
+            if isinstance(l3_dr, str): l3_dr = Decimal(l3_dr)
+            if isinstance(l3_cr, str): l3_cr = Decimal(l3_cr)
+            l3_node['amount'] = str(l3_dr - l3_cr) if debit_positive else str(l3_cr - l3_dr)
+
             if isinstance(l3_node.get('subtotal_debit'), Decimal):
                 l3_node['subtotal_debit'] = str(l3_node['subtotal_debit'])
                 l3_node['subtotal_credit'] = str(l3_node['subtotal_credit'])
@@ -415,6 +439,7 @@ def _stringify_section(section, has_compare):
                 l3_node['compare_subtotal_debit'] = str(l3_node['compare_subtotal_debit'])
                 l3_node['compare_subtotal_credit'] = str(l3_node['compare_subtotal_credit'])
 
+            _add_amount_to_accounts(l3_node.get('accounts', []), debit_positive)
             _stringify_accounts(l3_node.get('accounts', []), has_compare)
 
 
@@ -577,3 +602,70 @@ def _calculate_prior_retained(income_accounts, expense_accounts,
                 total_expense -= abs(bal['net'])
 
     return total_income - total_expense
+
+
+
+# ══════════════════════════════════════════════════
+# AMOUNT + DR/CR STRIPPING (Zoho-style clean JSON)
+# ══════════════════════════════════════════════════
+
+def _add_amount_to_accounts(accounts, debit_positive=True):
+    """
+    Recursively add a signed 'amount' field to each account node.
+
+    debit_positive=True  (ASSET/EXPENSE): own_debit → +, own_credit → −
+    debit_positive=False (LIABILITY/EQUITY/REVENUE): own_credit → +, own_debit → −
+    """
+    for acct in accounts:
+        own_dr = acct.get('own_debit_balance')
+        own_cr = acct.get('own_credit_balance')
+        if debit_positive:
+            # Asset/Expense: debit is positive, credit is negative
+            if own_dr is not None:
+                acct['amount'] = str(own_dr)
+            elif own_cr is not None:
+                val = Decimal(str(own_cr))
+                acct['amount'] = str(-val)
+            else:
+                acct['amount'] = None
+        else:
+            # Liability/Equity/Revenue: credit is positive, debit is negative
+            if own_cr is not None:
+                acct['amount'] = str(own_cr)
+            elif own_dr is not None:
+                val = Decimal(str(own_dr))
+                acct['amount'] = str(-val)
+            else:
+                acct['amount'] = None
+        _add_amount_to_accounts(acct.get('children', []), debit_positive)
+
+
+# Fields to remove — the 'amount' field replaces these
+_DR_CR_FIELDS = {
+    'subtotal_debit', 'subtotal_credit',
+    'own_debit_balance', 'own_credit_balance',
+    'compare_subtotal_debit', 'compare_subtotal_credit',
+    'compare_own_debit_balance', 'compare_own_credit_balance',
+}
+
+
+def _strip_dr_cr_from_section(section):
+    """
+    Remove all debit/credit field pairs from a BS section tree.
+    Called after 'amount' is set on every node.
+    """
+    for l2_node in section:
+        for field in _DR_CR_FIELDS:
+            l2_node.pop(field, None)
+        for l3_node in l2_node.get('children', []):
+            for field in _DR_CR_FIELDS:
+                l3_node.pop(field, None)
+            _strip_dr_cr_from_accounts(l3_node.get('accounts', []))
+
+
+def _strip_dr_cr_from_accounts(accounts):
+    """Recursively strip debit/credit fields from account nodes."""
+    for acct in accounts:
+        for field in _DR_CR_FIELDS:
+            acct.pop(field, None)
+        _strip_dr_cr_from_accounts(acct.get('children', []))
