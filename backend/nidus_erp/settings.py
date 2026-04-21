@@ -34,6 +34,11 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    # ── humanize: built-in Django app (no pip install required). ──
+    # Provides template filters like {{ n|intcomma }} → "1,234,567"
+    # Used in Jazzmin admin list displays and email templates for
+    # readable money/date/relative-time formatting.
+    'django.contrib.humanize',
 
     'rest_framework',
     'rest_framework_simplejwt', 
@@ -45,6 +50,15 @@ INSTALLED_APPS = [
     'chartofaccounts',
     'journals',
     'reports',
+
+    # ── drf-spectacular (Phase 3) ──
+    # Generates an OpenAPI 3.0 schema automatically from DRF views/serializers.
+    # Exposed at:
+    #   GET /api/schema/      → raw OpenAPI JSON (consumed by clients/code-gens)
+    #   GET /api/docs/        → Swagger UI (human-browsable interactive docs)
+    # The frontend will pull /api/schema/ through openapi-typescript-codegen
+    # to generate fully-typed TypeScript API clients.
+    'drf_spectacular',
 ]
 
 MIDDLEWARE = [
@@ -155,6 +169,52 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'nidus_erp.pagination.StandardResultsSetPagination',
     'PAGE_SIZE': 20,
+
+    # ── OpenAPI schema class (Phase 3) ──
+    # drf-spectacular inspects views and serializers to auto-generate
+    # OpenAPI 3.0 descriptions. Setting it as the default schema class
+    # replaces DRF's built-in (inferior) schema generator.
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+
+    # ──────────────────────────────────────────────
+    # THROTTLING — per-endpoint rate limits
+    # ──────────────────────────────────────────────
+    # DRF's ScopedRateThrottle lets each view pick a named scope via
+    # `throttle_scope = '...'`. Anonymous users are keyed by IP address;
+    # authenticated users are keyed by user ID. The rates below target
+    # unauthenticated abuse vectors: brute-force logins and email flooding.
+    #
+    # HOW DRF STORES THIS: in the default cache (LocMemCache in dev).
+    # In production, point CACHES to Redis so counters are shared across
+    # Gunicorn workers — otherwise each worker enforces its own counter
+    # and the real limit becomes `rate × worker_count`.
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.ScopedRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        # Login: 10 attempts per minute per IP.
+        # Tight enough to stop credential-stuffing, loose enough that a
+        # legitimate user who mistypes a few times is not locked out.
+        'anon_login': '10/min',
+
+        # Resend OTP: 5 per hour per IP.
+        # This endpoint sends an email on every successful hit, so we
+        # protect against (a) email-flood harassment of a known address
+        # and (b) SMTP cost abuse. 5/hour still lets a real user recover
+        # from a typo'd email without waiting.
+        'anon_resend_otp': '5/hour',
+
+        # Forgot password: 5 per hour per IP.
+        # Same reasoning as resend-otp — it sends an email and must be
+        # rate limited to prevent enumeration + flooding.
+        'anon_forgot_password': '5/hour',
+
+        # Reset password: 10 per hour per IP.
+        # Not email-sending, but limit OTP-guessing attempts against the
+        # password-reset code (6 digits = 1M combinations; 10/hr means
+        # realistic brute-force would need ~100k hours).
+        'anon_reset_password': '10/hour',
+    },
 }
 
 
@@ -283,4 +343,63 @@ JAZZMIN_UI_TWEAKS = {
         'danger': 'btn-danger',
         'success': 'btn-success',
     },
+}
+
+
+# ──────────────────────────────────────────────
+# DRF-SPECTACULAR — OpenAPI 3.0 config (Phase 3)
+# ──────────────────────────────────────────────
+# Every setting is scoped under the SPECTACULAR_SETTINGS key (convention
+# enforced by drf-spectacular — do not inline these into REST_FRAMEWORK).
+SPECTACULAR_SETTINGS = {
+    # ── Document identity ──
+    # These appear as the title, version, and description at the top of
+    # Swagger UI and inside the generated OpenAPI JSON.
+    'TITLE': 'Nidus ERP API',
+    'DESCRIPTION': (
+        'Internal REST API for Nidus ERP — a multi-tenant financial ERP '
+        'backend. Authentication uses JWT (access + refresh token rotation). '
+        'All /api/companies/<id>/... endpoints are scoped to the company '
+        'identified by <id>; the caller must be an active CompanyUser member.'
+    ),
+    'VERSION': '0.5.0',     # Semantic: Step 5 (Reports) complete, Step 6 frontend in progress
+
+    # ── Schema routing ──
+    # When True, the /api/schema/ endpoint includes the outer Django URL
+    # routes (like /admin/, /static/). We only want the API surface.
+    'SERVE_INCLUDE_SCHEMA': False,
+
+    # Only routes under /api/ appear in the schema. Exclude /admin/,
+    # /static/, and root-level paths — those are Django internals, not API.
+    'SCHEMA_PATH_PREFIX': r'/api',
+
+    # ── Authorisation display ──
+    # Tells Swagger UI that endpoints default to requiring a Bearer JWT,
+    # and renders the "Authorize" button correctly.
+    'SECURITY': [{'BearerAuth': []}],
+
+    # ── Renderer defaults ──
+    # 'deepLinking' lets users share URLs to specific operations in Swagger UI.
+    # 'persistAuthorization' keeps the token in the UI across page reloads,
+    # which saves retyping during development.
+    'SWAGGER_UI_SETTINGS': {
+        'deepLinking': True,
+        'persistAuthorization': True,
+        'displayRequestDuration': True,
+    },
+
+    # ── Schema hygiene ──
+    # COMPONENT_SPLIT_REQUEST=True generates separate schemas for request
+    # vs response bodies when they differ (e.g., write-only `password` field
+    # on RegisterSerializer). Produces more accurate client types.
+    'COMPONENT_SPLIT_REQUEST': True,
+
+    # Keep enum names derived from the field name, not auto-generated
+    # 'EnumEnum3' noise. Improves generated client type names.
+    'ENUM_NAME_OVERRIDES': {},
+
+    # When a view has no schema annotations at all, generate a best-effort
+    # schema rather than omitting it. We'll progressively annotate views
+    # later with @extend_schema decorators for precision.
+    'GENERIC_ADDITIONAL_PROPERTIES': 'bool',
 }

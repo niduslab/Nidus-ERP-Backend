@@ -95,6 +95,24 @@ class JournalListCreateView(APIView):
     """
 
     def get(self, request, company_id):
+        """
+        List journal entries with optional filters.
+
+        PERFORMANCE:
+            The queryset carries two annotations (`total_amount`, `line_count`)
+            consumed by ManualJournalListSerializer. This replaces an older
+            implementation that computed these via SerializerMethodField per
+            row, causing a 2×N N+1 query pattern. See the serializer docstring
+            for details.
+
+            We also drop prefetch_related('lines') from the list path: the list
+            serializer no longer reads line rows directly — only the aggregated
+            annotations — so prefetching lines would be wasted work and memory.
+        """
+        # ── Imports (local to avoid polluting the module top-level namespace) ──
+        from django.db.models import Sum, Count, Q
+        from nidus_erp.pagination import StandardResultsSetPagination
+
         company, membership = get_company_and_membership(request, company_id)
         if not membership:
             return Response(
@@ -107,9 +125,25 @@ class JournalListCreateView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        journals = ManualJournal.objects.filter(
-            company=company,
-        ).select_related('created_by').prefetch_related('lines')
+        # ── Base queryset with performance annotations ──
+        # total_amount: SUM of DEBIT line amounts — reported to the client as the
+        #               journal "size" (equals total credit when balanced).
+        # line_count : Count of all lines (debit + credit). distinct=True guards
+        #              against row multiplication when combined with the Sum JOIN.
+        # Both aggregations share a single LEFT JOIN on manual_journal_line and
+        # execute as one SQL query with GROUP BY manual_journal.id.
+        journals = (
+            ManualJournal.objects
+            .filter(company=company)
+            .select_related('created_by')
+            .annotate(
+                total_amount=Sum(
+                    'lines__amount',
+                    filter=Q(lines__entry_type='DEBIT'),
+                ),
+                line_count=Count('lines', distinct=True),
+            )
+        )
 
         # ── Optional filters ──
         status_filter = request.query_params.get('status')
@@ -130,15 +164,62 @@ class JournalListCreateView(APIView):
 
         search = request.query_params.get('search')
         if search:
-            from django.db.models import Q
             journals = journals.filter(
                 Q(entry_number__icontains=search) |
                 Q(description__icontains=search) |
                 Q(reference__icontains=search)
             )
 
+        # ── Ordering ──
+        # Accepts a comma-separated `ordering` query param, DRF-style:
+        #     ?ordering=-created_at            → newest created first
+        #     ?ordering=-status,-date          → primary by status, secondary by date
+        #     ?ordering=date                   → oldest date first
+        #
+        # We whitelist the allowed fields to:
+        #   (a) prevent ORDER BY on unindexed columns (e.g., `description`),
+        #       which would trigger a full table scan on the 7k+ row dataset;
+        #   (b) avoid leaking fields that aren't in the response payload;
+        #   (c) keep the public API surface tight and documented.
+        #
+        # `total_amount` is valid because we added it as a SQL annotation at
+        # the top of this method — the database can ORDER BY it natively.
+        #
+        # When the param is absent, we fall through to the model's Meta
+        # ordering (['-date', '-created_at']) — the existing behaviour.
+        ALLOWED_ORDERING = {
+            'date', '-date',
+            'created_at', '-created_at',
+            'entry_number', '-entry_number',
+            'status', '-status',
+            'journal_type', '-journal_type',
+            'total_amount', '-total_amount',
+        }
+
+        ordering_param = request.query_params.get('ordering')
+        if ordering_param:
+            # Split, strip blanks, drop empty tokens from a trailing comma
+            requested_fields = [f.strip() for f in ordering_param.split(',') if f.strip()]
+            invalid_fields = [f for f in requested_fields if f not in ALLOWED_ORDERING]
+
+            if invalid_fields:
+                # Return 400 rather than silently ignore — clearer for API clients
+                # and surfaces typos (e.g., `?ordering=-created` instead of `-created_at`).
+                return Response(
+                    {
+                        'success': False,
+                        'message': (
+                            f'Invalid ordering field(s): {invalid_fields}. '
+                            f'Allowed fields: {sorted(ALLOWED_ORDERING)}'
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # *requested_fields unpacks the list into order_by() positional args
+            journals = journals.order_by(*requested_fields)
+
         # ── Pagination ──
-        from nidus_erp.pagination import StandardResultsSetPagination
         paginator = StandardResultsSetPagination()
         page = paginator.paginate_queryset(journals, request)
 
@@ -146,7 +227,7 @@ class JournalListCreateView(APIView):
             serializer = ManualJournalListSerializer(page, many=True)
             return paginator.get_paginated_response(serializer.data)
 
-        # Fallback (shouldn't happen, but safe)
+        # Fallback (shouldn't happen with DRF's default paginator, but safe)
         serializer = ManualJournalListSerializer(journals, many=True)
         return Response(
             {'success': True, 'count': len(serializer.data), 'data': serializer.data},
@@ -694,3 +775,128 @@ class BulkImportUploadView(APIView):
             response_data['rejected_entries'] = result['rejected_entries']
 
         return Response(response_data, status=status.HTTP_201_CREATED)
+
+
+
+
+# ══════════════════════════════════════════════════
+# JOURNAL ENTRIES EXPORT (Phase 3)
+# ══════════════════════════════════════════════════
+
+class JournalExportView(APIView):
+    """
+    GET /api/companies/<company_id>/journal-entries/export/
+
+    Export all journal entries matching the filters as xlsx / csv / pdf / docx.
+
+    QUERY PARAMS:
+        export        — xlsx | csv | pdf | docx       REQUIRED
+        status        — DRAFT | POSTED | VOID         optional
+        journal_type  — ADJUSTMENT | SALES | ...      optional
+        date_from     — YYYY-MM-DD                    optional
+        date_to       — YYYY-MM-DD                    optional
+        search        — free text                     optional
+
+    WHY A DEDICATED VIEW (instead of ?export= on the list endpoint):
+        - Cleaner OpenAPI schema (the list endpoint stays strictly JSON).
+        - No pagination ambiguity — export always returns everything matching
+          the filter, pagination only applies to the human-facing list UI.
+        - Shares the same filter surface as the list endpoint, so there is
+          no new vocabulary for users to learn.
+
+    PERMISSIONS:
+        Same as list: any JOURNAL_VIEW_ROLES member (OWNER, ADMIN,
+        ACCOUNTANT, AUDITOR). Export is a read operation.
+
+    RATE LIMIT:
+        Not throttled at the per-endpoint level yet. If abuse emerges,
+        add a scoped throttle keyed by user_id (authenticated users only —
+        this endpoint is not AllowAny).
+    """
+
+    def get(self, request, company_id):
+        # ── Imports local to this method to mirror existing style in this file ──
+        from reports.exporters import maybe_export
+        from .export import build_export_payload
+
+        # ── Permission check (same pattern as JournalListCreateView.get) ──
+        company, membership = get_company_and_membership(request, company_id)
+        if not membership:
+            return Response(
+                {'success': False, 'message': 'You do not have access to this company.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if membership.role not in JOURNAL_VIEW_ROLES:
+            return Response(
+                {'success': False, 'message': 'Your role does not have permission to export journal entries.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # ── Required param: export format ──
+        # We accept 'export' (matches the reports app's convention) and
+        # deliberately do NOT accept 'format' — DRF reserves that name for
+        # its internal content-negotiation mechanism.
+        export_format = request.query_params.get('export')
+        if not export_format:
+            return Response(
+                {
+                    'success': False,
+                    'message': (
+                        "Missing required query parameter: 'export'. "
+                        "Use ?export=xlsx | csv | pdf | docx."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Collect & normalise optional filters ──
+        # We upper-case status and journal_type so users can pass 'posted'
+        # or 'POSTED' interchangeably, matching the list endpoint's behaviour.
+        filters = {}
+
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            filters['status'] = status_filter.upper()
+
+        journal_type = request.query_params.get('journal_type')
+        if journal_type:
+            filters['journal_type'] = journal_type.upper()
+
+        date_from = request.query_params.get('date_from')
+        if date_from:
+            filters['date_from'] = date_from
+
+        date_to = request.query_params.get('date_to')
+        if date_to:
+            filters['date_to'] = date_to
+
+        search = request.query_params.get('search')
+        if search:
+            filters['search'] = search
+
+        # ── Assemble the payload ──
+        # build_export_payload raises ValueError if the result set exceeds
+        # MAX_EXPORT_JOURNALS. Translate that into an HTTP 400 — the user's
+        # filter was too broad, it's their responsibility to narrow it.
+        try:
+            payload, _ = build_export_payload(company, filters=filters)
+        except ValueError as exc:
+            return Response(
+                {'success': False, 'message': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── Delegate to the existing renderer dispatch ──
+        # maybe_export handles:
+        #   - Format validation (xlsx/csv/pdf/docx only)
+        #   - Per-report format allow-list (journal_entries supports all 4)
+        #   - Filename generation (NidusERP_<company>_Journal_Entries.<ext>)
+        #   - HttpResponse wrapping with correct Content-Type + Content-Disposition
+        # It returns an HttpResponse on success or a DRF Response (HTTP 400)
+        # on format-validation failure — either way we just return it.
+        return maybe_export(
+            export_format=export_format,
+            report_type='journal_entries',
+            report_data=payload,
+            company_name=company.name,
+        )

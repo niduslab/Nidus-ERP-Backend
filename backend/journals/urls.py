@@ -13,7 +13,10 @@ urlpatterns = [
         views.JournalListCreateView.as_view(),
         name='journal-list-create',
     ),
+
     # ── Bulk Import ──
+    # Registered before the <uuid:entry_id> detail URL so the more specific
+    # 'bulk-import/*' routes win the match (Django's URL resolver is first-hit).
     path(
         'journal-entries/bulk-import/template/',
         views.BulkImportTemplateDownloadView.as_view(),
@@ -24,6 +27,19 @@ urlpatterns = [
         views.BulkImportUploadView.as_view(),
         name='bulk-import-upload',
     ),
+
+    # ── Export (Phase 3) ──
+    # Also registered before the detail URL for the same reason:
+    # 'journal-entries/export/' must not be interpreted as entry_id='export'.
+    # UUID converter would actually prevent the collision, but listing it
+    # here explicitly keeps the ordering intention clear to future readers.
+    path(
+        'journal-entries/export/',
+        views.JournalExportView.as_view(),
+        name='journal-export',
+    ),
+
+    # ── Journal Detail (must come AFTER the specific paths above) ──
     path(
         'journal-entries/<uuid:entry_id>/',
         views.JournalDetailView.as_view(),

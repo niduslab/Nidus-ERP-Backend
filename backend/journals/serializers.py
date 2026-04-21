@@ -348,14 +348,35 @@ class UpdateManualJournalSerializer(serializers.Serializer):
 class ManualJournalListSerializer(serializers.ModelSerializer):
     """
     Lightweight serializer for listing journals.
-    Shows summary info, not full line details.
+
+    PERFORMANCE CONTRACT (read carefully):
+        This serializer EXPECTS the input queryset to carry two annotations:
+            - total_amount : Sum of DEBIT line amounts  (Decimal, may be None)
+            - line_count   : Count of lines             (int)
+        These are added in JournalListCreateView.get() via .annotate(...).
+
+    WHY THIS MATTERS:
+        The previous implementation used SerializerMethodField with
+        obj.lines.filter(...).aggregate(Sum) and obj.lines.count(). Each call
+        ran a fresh SQL query — 2 extra queries per journal. For a page of 20,
+        that is 40 wasted round trips. The .filter().aggregate() pattern also
+        BYPASSES prefetch_related() caches, so the earlier prefetch was useless.
+
+        The fix moves both computations into the original SELECT using GROUP BY,
+        so N journals → 1 query instead of 1 + 2N queries.
     """
     created_by_name = serializers.CharField(
         source='created_by.full_name',
         read_only=True,
     )
+
+    # Read directly from the queryset annotation via SerializerMethodField only
+    # to stringify the Decimal consistently (and handle None for empty journals).
     total_amount = serializers.SerializerMethodField()
-    line_count = serializers.SerializerMethodField()
+
+    # line_count is read directly from the annotation — Django's IntegerField
+    # will pick up obj.line_count without any method call.
+    line_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = ManualJournal
@@ -376,21 +397,35 @@ class ManualJournalListSerializer(serializers.ModelSerializer):
         ]
 
     def get_total_amount(self, obj):
-        """Sum of all debit amounts (which equals credit total when balanced)."""
-        total = obj.lines.filter(
-            entry_type=EntryTypeChoices.DEBIT
-        ).aggregate(
-            total=Sum('amount')
-        )['total']
-        return str(total) if total else '0.00'
+        """
+        Return the annotated DEBIT total as a string.
 
-    def get_line_count(self, obj):
-        return obj.lines.count()
+        Falls back to '0.00' when the annotation is missing (journal has no
+        lines yet, so SUM() returned NULL → None in Python) or when the
+        caller forgot to annotate (defensive — bug should surface loudly in
+        tests, but we never want to crash a list response).
+        """
+        total = getattr(obj, 'total_amount', None)
+        return str(total) if total is not None else '0.00'
 
 
 class ManualJournalDetailSerializer(serializers.ModelSerializer):
     """
     Full journal details with nested lines and audit info.
+
+    PERFORMANCE CONTRACT:
+        Caller should prefetch related lines to keep total queries flat:
+            ManualJournal.objects
+              .select_related('created_by', 'voided_by',
+                              'voided_by_entry', 'reversal_of')
+              .prefetch_related('lines__account', 'lines__tax_profile')
+
+        JournalDetailView.get() already does this correctly.
+
+    PERFORMANCE NOTE on total_debit / total_credit:
+        These now iterate obj.lines.all() in Python using the prefetched
+        queryset — NOT .filter().aggregate(), which would bypass the prefetch
+        cache and hit the DB again. With prefetch in place, 0 extra queries.
     """
     lines = ManualJournalLineOutputSerializer(many=True, read_only=True)
     created_by_name = serializers.CharField(
@@ -437,18 +472,28 @@ class ManualJournalDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_total_debit(self, obj):
-        total = obj.lines.filter(
-            entry_type=EntryTypeChoices.DEBIT
-        ).aggregate(total=Sum('amount'))['total']
-        return str(total) if total else '0.00'
+        """
+        Sum the amounts of all DEBIT lines using the prefetched queryset.
+
+        Iterates obj.lines.all() in Python — with prefetch_related('lines') in
+        the view, this triggers ZERO additional DB queries. Decimal addition
+        starts from Decimal('0.00') to preserve precision even for empty lists.
+        """
+        total = sum(
+            (line.amount for line in obj.lines.all()
+             if line.entry_type == EntryTypeChoices.DEBIT),
+            Decimal('0.00'),
+        )
+        return str(total)
 
     def get_total_credit(self, obj):
-        total = obj.lines.filter(
-            entry_type=EntryTypeChoices.CREDIT
-        ).aggregate(total=Sum('amount'))['total']
-        return str(total) if total else '0.00'
-
-
+        """Mirror of get_total_debit for the CREDIT side. Same zero-extra-query contract."""
+        total = sum(
+            (line.amount for line in obj.lines.all()
+             if line.entry_type == EntryTypeChoices.CREDIT),
+            Decimal('0.00'),
+        )
+        return str(total)
 # ══════════════════════════════════════════════════
 # LEDGER ENTRY SERIALIZER
 # ══════════════════════════════════════════════════

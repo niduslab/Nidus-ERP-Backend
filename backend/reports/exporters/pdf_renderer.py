@@ -22,6 +22,7 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm, cm
+from reportlab.lib.enums import TA_LEFT   # Left-alignment constant for ParagraphStyle
 from reportlab.platypus import (
     SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak,
 )
@@ -97,16 +98,60 @@ STYLE_BOLD = ParagraphStyle(
     fontName=FONT_NAME_PDF, fontSize=8, textColor=CLR_BLACK,
 )
 
+# ── Description style used in table cells that must wrap onto multiple lines. ──
+# reportlab's Table only wraps content when the cell contains a Paragraph
+# flowable; plain strings are truncated or clipped. By giving description
+# cells a dedicated ParagraphStyle, long text automatically wraps within the
+# column width and the row height expands to fit — no manual truncation.
+# Leading is set slightly tighter than the default (1.2x font size) for a
+# compact, readable result inside narrow columns.
+STYLE_CELL_WRAP = ParagraphStyle(
+    'NidusCellWrap', parent=_styles['Normal'],
+    fontName=FONT_NAME_PDF, fontSize=8, textColor=CLR_BLACK,
+    alignment=TA_LEFT,
+    leading=10,      # line-height — a touch tighter than font_size * 1.2
+    spaceAfter=0, spaceBefore=0,
+    wordWrap='CJK',  # Fallback wrap mode that handles non-Latin scripts too
+)
+
 
 # ══════════════════════════════════════════════════
 # SHARED PDF HELPERS
 # ══════════════════════════════════════════════════
 
-def _build_header_elements(info):
-    """Build the report header as a list of Platypus flowables."""
+def _build_header_elements(info, applied_filters=None, extra_meta=None):
+    """
+    Build the report header as a list of Platypus flowables.
+
+    Args:
+        info:            header dict from styles.build_header_info()
+        applied_filters: optional list of (label, value) tuples to display
+                         in an "Applied filters:" block beneath the subtitle.
+                         When None or empty, the block is omitted entirely so
+                         unfiltered exports stay clean.
+        extra_meta:      optional list of (label, value) tuples shown as a
+                         single pipe-separated line above the date range.
+                         Used for things like "Total entries: 42".
+
+    Layout order (top → bottom):
+        1. Company name            (STYLE_TITLE)
+        2. Report title            (STYLE_BOLD)
+        3. extra_meta              (STYLE_SUBTITLE — e.g., entry count)
+        4. Date/period line        (STYLE_SUBTITLE)
+        5. Currency / method line  (STYLE_SUBTITLE)
+        6. Applied filters block   (STYLE_SUBTITLE — each on its own line)
+        7. Vertical spacer
+    """
     elements = []
     elements.append(Paragraph(info['company_name'], STYLE_TITLE))
     elements.append(Paragraph(info['report_title'], STYLE_BOLD))
+
+    # ── Extra metadata line (e.g., "Total entries: 42") ──
+    # Rendered above the date range because it answers the reader's first
+    # implicit question ("how big is this?") before the "what period?" one.
+    if extra_meta:
+        meta_parts = ['{}: {}'.format(label, value) for label, value in extra_meta]
+        elements.append(Paragraph(' | '.join(meta_parts), STYLE_SUBTITLE))
 
     if info.get('as_of_date'):
         elements.append(Paragraph('As of {}'.format(info['as_of_date']), STYLE_SUBTITLE))
@@ -121,6 +166,23 @@ def _build_header_elements(info):
         parts.append('Method: {}'.format(info['method']))
     if parts:
         elements.append(Paragraph(' | '.join(parts), STYLE_SUBTITLE))
+
+    # ── Applied filters block ──
+    # Only rendered when the caller provided a non-empty list — no empty
+    # section for unfiltered exports. Each filter on its own line so long
+    # values (e.g., a multi-word search term) don't push the line off the
+    # page. The heading uses bold to visually separate this block from the
+    # date/currency metadata above.
+    if applied_filters:
+        elements.append(Spacer(1, 2 * mm))
+        elements.append(Paragraph('<b>Applied filters:</b>', STYLE_SUBTITLE))
+        for label, value in applied_filters:
+            # reportlab renders basic HTML tags inside Paragraph — use <b>
+            # to style just the label, not the whole line.
+            elements.append(Paragraph(
+                '&nbsp;&nbsp;<b>{}:</b> {}'.format(label, value),
+                STYLE_SUBTITLE,
+            ))
 
     elements.append(Spacer(1, 5 * mm))
     return elements
@@ -204,6 +266,29 @@ def _fmt(value):
         return '{:,.2f}'.format(d)
     except Exception:
         return str(value)
+
+
+def _escape_xml(text):
+    """
+    Escape XML special characters for safe inclusion inside a reportlab
+    Paragraph.
+
+    reportlab's Paragraph parses its content as mini-XML so it can support
+    inline tags like <b>, <i>, <font>, <br/>, etc. That means user-supplied
+    text containing '<', '>', or '&' will raise a parse error. This helper
+    escapes those three characters so any string can be embedded safely.
+
+    We DO NOT escape quotes — reportlab's parser doesn't require that, and
+    escaping them would clutter the output with &quot;.
+    """
+    if text is None:
+        return ''
+    return (
+        str(text)
+        .replace('&', '&amp;')   # Must be first — avoid double-escaping
+        .replace('<', '&lt;')
+        .replace('>', '&gt;')
+    )
 
 
 # ══════════════════════════════════════════════════
@@ -612,24 +697,84 @@ def _render_cash_flow(data):
 # ══════════════════════════════════════════════════
 
 def _render_journal_entries(data):
-    info = build_header_info(data)
-    elements = _build_header_elements(info)
+    """
+    Render Journal Entries export as a landscape PDF.
 
+    Two readability improvements vs. the original implementation:
+
+    1. MULTI-LINE DESCRIPTIONS:
+       The original truncated descriptions to 30 chars. That loses data.
+       Here we wrap the Account column AND the Description column in
+       Paragraph flowables (not plain strings), which lets reportlab wrap
+       long text and grow the row height to fit. No data is lost — a
+       60-char description simply occupies two lines.
+
+    2. APPLIED-FILTERS HEADER:
+       The header block now lists which filters the user applied (status,
+       date range, etc.) so anyone reading the PDF later understands what
+       this file represents — they don't have to guess from the filename.
+    """
+    info = build_header_info(data)
+
+    # ── Build header with applied-filters and a total-count summary ──
+    # Both are optional — `applied_filters` will be an empty list on
+    # unfiltered exports, in which case the helper omits the block.
+    applied_filters = data.get('applied_filters') or []
+    journal_count = data.get('journal_count')
+    extra_meta = (
+        [('Total entries', journal_count)]
+        if journal_count is not None
+        else None
+    )
+    elements = _build_header_elements(
+        info,
+        applied_filters=applied_filters,
+        extra_meta=extra_meta,
+    )
+
+    # ── Table rows ──
+    # Header row is plain strings — _make_table renders them with the
+    # standard white-on-dark header styling. Data rows wrap the Account
+    # and Description cells in Paragraph objects so they break across
+    # multiple lines when the content exceeds the column width.
     rows = [['Entry #', 'Date', 'Status', 'Account', 'Debit', 'Credit', 'Description']]
 
     for journal in data.get('journals', []):
         for line in journal.get('lines', []):
             dr_val = _fmt(line.get('amount')) if line.get('entry_type') == 'DEBIT' else ''
             cr_val = _fmt(line.get('amount')) if line.get('entry_type') == 'CREDIT' else ''
+
+            # Account cell: Paragraph lets long account names wrap onto a
+            # second line rather than overflowing into the Debit column.
+            account_text = '{} — {}'.format(
+                line.get('account_code', ''),
+                line.get('account_name', ''),
+            )
+            account_cell = Paragraph(account_text, STYLE_CELL_WRAP)
+
+            # Description cell: Paragraph allows multi-line wrapping. NOTE
+            # that we no longer truncate to 30 chars — the full description
+            # is shown, and the row height grows automatically. _escape_xml
+            # prevents reportlab from interpreting '<' / '>' / '&' in user
+            # text as inline HTML, which would raise a parse error.
+            description_text = _escape_xml(str(journal.get('description', '')))
+            description_cell = Paragraph(description_text, STYLE_CELL_WRAP)
+
             rows.append([
-                journal.get('entry_number', ''), journal.get('date', ''),
+                journal.get('entry_number', ''),
+                journal.get('date', ''),
                 journal.get('status', ''),
-                '{} — {}'.format(line.get('account_code', ''), line.get('account_name', '')),
-                dr_val, cr_val,
-                str(journal.get('description', ''))[:30],
+                account_cell,
+                dr_val,
+                cr_val,
+                description_cell,
             ])
 
-    table = _make_table(rows, col_widths=[50, 50, 40, 140, 55, 55, 100])
+    # ── Column widths ──
+    # Slightly wider Description (120pt was 100pt) at the expense of Account
+    # (130pt was 140pt). In landscape A4 there is plenty of room, and the
+    # extra description width reduces the number of lines each row needs.
+    table = _make_table(rows, col_widths=[50, 50, 40, 130, 55, 55, 120])
     elements.append(table)
 
     return _build_pdf(elements, is_landscape=True)

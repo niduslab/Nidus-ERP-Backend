@@ -52,6 +52,23 @@ class User(AbstractBaseUser, PermissionsMixin):
     is_email_verified = models.BooleanField(default=False, verbose_name='email verified')
     email_verification_code = models.CharField(max_length=6, blank=True, null=True, verbose_name='verification code')
     email_verification_code_expires = models.DateTimeField(blank=True, null=True, verbose_name='verification code expiry')
+
+    # ── Password reset OTP (Phase 2) ──
+    # Separate from email_verification_* so a user with a pending email
+    # verification can ALSO initiate a password reset without the two
+    # codes overwriting each other. Both are short-lived and cleared
+    # after successful use.
+    password_reset_code = models.CharField(
+        max_length=6, blank=True, null=True,
+        verbose_name='password reset code',
+        help_text='6-digit OTP sent to user email for password reset. Cleared on successful reset.',
+    )
+    password_reset_code_expires = models.DateTimeField(
+        blank=True, null=True,
+        verbose_name='password reset code expiry',
+        help_text='When the password reset OTP expires. Typically now + OTP_EXPIRY_MINUTES.',
+    )
+
     is_active = models.BooleanField(default=True, verbose_name='active')
     is_staff = models.BooleanField(default=False, verbose_name='staff status')
     date_joined = models.DateTimeField(default=timezone.now, verbose_name='date joined')

@@ -231,3 +231,27 @@ def send_ownership_transferred_email(user, company_name, new_owner_name, new_rol
         },
         recipient_email=user.email,
     )
+
+
+
+def send_password_reset_email(user, otp_code):
+    """
+    Send a password reset OTP to the user's email.
+
+    Called from: authentication/views.py → ForgotPasswordView
+    Template:    templates/emails/password_reset.html
+
+    The template deliberately mirrors verification.html so users perceive
+    both flows as part of the same product family. We include the expiry
+    window in the context so the template can show a matching warning.
+    """
+    return _send_html_email(
+        subject='Nidus ERP — Reset Your Password',
+        template_name='emails/password_reset.html',
+        context={
+            'full_name': user.full_name,
+            'otp_code': otp_code,
+            'expiry_minutes': settings.OTP_EXPIRY_MINUTES,
+        },
+        recipient_email=user.email,
+    )

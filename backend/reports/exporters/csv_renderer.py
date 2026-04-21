@@ -166,5 +166,3 @@ def _render_journal_entries(data):
             ])
 
     return _to_bytes(output)
-
-

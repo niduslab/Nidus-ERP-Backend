@@ -94,8 +94,24 @@ def _setup_doc(is_landscape=False):
     return doc
 
 
-def _add_header(doc, info):
-    """Add company name, report title, and date info."""
+def _add_header(doc, info, applied_filters=None, extra_meta=None):
+    """
+    Add company name, report title, date info, optional metadata,
+    and an optional "Applied filters:" block.
+
+    Args:
+        doc:             python-docx Document instance
+        info:            header dict from styles.build_header_info()
+        applied_filters: optional list of (label, value) tuples for the
+                         "Applied filters:" block. When None or empty,
+                         the block is omitted so unfiltered exports stay clean.
+        extra_meta:      optional list of (label, value) tuples rendered
+                         as a single pipe-separated line directly under the
+                         report title — used for totals like "Total entries: 42".
+
+    Keeping `applied_filters` and `extra_meta` as optional kwargs means
+    existing renderers that don't pass them behave exactly as before.
+    """
     # Company name
     p = doc.add_paragraph()
     run = p.add_run(info['company_name'])
@@ -108,6 +124,15 @@ def _add_header(doc, info):
     run = p.add_run(info['report_title'])
     run.font.size = Pt(12)
     run.font.bold = True
+
+    # ── Extra metadata line (e.g., "Total entries: 42") ──
+    # Directly under the title, above dates — answers "how big?" before "when?".
+    if extra_meta:
+        meta_parts = ['{}: {}'.format(label, value) for label, value in extra_meta]
+        p = doc.add_paragraph()
+        run = p.add_run(' | '.join(meta_parts))
+        run.font.size = Pt(9)
+        run.font.color.rgb = CLR_GREY
 
     # Date line
     if info.get('as_of_date'):
@@ -133,7 +158,34 @@ def _add_header(doc, info):
         run.font.size = Pt(9)
         run.font.color.rgb = CLR_GREY
 
-    doc.add_paragraph()  # Spacer
+    # ── Applied filters block ──
+    # Bold heading, then each filter on its own paragraph with a bold label
+    # and plain-text value. Only rendered when the caller provided filters.
+    if applied_filters:
+        # Small vertical spacer so the block is visually distinct from
+        # the currency line above it.
+        doc.add_paragraph()
+
+        p = doc.add_paragraph()
+        run = p.add_run('Applied filters:')
+        run.font.size = Pt(9)
+        run.font.bold = True
+        run.font.color.rgb = CLR_TEXT
+
+        for label, value in applied_filters:
+            p = doc.add_paragraph()
+            # Indent the filter lines slightly — docx has no native CSS
+            # left-padding, so we use a leading tab via text content.
+            label_run = p.add_run('    {}: '.format(label))
+            label_run.font.size = Pt(9)
+            label_run.font.bold = True
+            label_run.font.color.rgb = CLR_TEXT
+
+            value_run = p.add_run(str(value))
+            value_run.font.size = Pt(9)
+            value_run.font.color.rgb = CLR_TEXT
+
+    doc.add_paragraph()  # Spacer before the data table
 
 
 def _add_table(doc, headers, rows, col_widths=None, row_styles=None):
@@ -635,9 +687,35 @@ def _render_cash_flow(data):
 # ══════════════════════════════════════════════════
 
 def _render_journal_entries(data):
+    """
+    Render Journal Entries export as a landscape DOCX.
+
+    Changes vs. the original implementation:
+
+    1. DESCRIPTION NO LONGER TRUNCATED:
+       Word wraps cell content natively — no Paragraph-flowable trick is
+       needed (unlike the PDF renderer). The old 30-char truncation dropped
+       data for no good reason, so we now pass the full description string.
+
+    2. APPLIED-FILTERS HEADER:
+       The header block lists which filters the user applied (status,
+       date range, etc.) so anyone reading the DOCX later understands
+       what the file contains without guessing from the filename.
+    """
     doc = _setup_doc(is_landscape=True)
     info = build_header_info(data)
-    _add_header(doc, info)
+
+    # Pass filters and total count through to the extended _add_header.
+    # Both are harmless when absent — _add_header silently omits the
+    # corresponding sections, so unfiltered exports look identical to before.
+    applied_filters = data.get('applied_filters') or []
+    journal_count = data.get('journal_count')
+    extra_meta = (
+        [('Total entries', journal_count)]
+        if journal_count is not None
+        else None
+    )
+    _add_header(doc, info, applied_filters=applied_filters, extra_meta=extra_meta)
 
     rows = []
     for journal in data.get('journals', []):
@@ -645,13 +723,21 @@ def _render_journal_entries(data):
             dr_val = _fmt(line.get('amount')) if line.get('entry_type') == 'DEBIT' else ''
             cr_val = _fmt(line.get('amount')) if line.get('entry_type') == 'CREDIT' else ''
             rows.append([
-                journal.get('entry_number', ''), journal.get('date', ''),
+                journal.get('entry_number', ''),
+                journal.get('date', ''),
                 journal.get('status', ''),
                 '{} — {}'.format(line.get('account_code', ''), line.get('account_name', '')),
-                dr_val, cr_val,
-                str(journal.get('description', ''))[:30],
+                dr_val,
+                cr_val,
+                # Full description — Word wraps cell text automatically, so
+                # long narratives simply grow the row height. No truncation.
+                str(journal.get('description', '')),
             ])
 
-    _add_table(doc, ['Entry #', 'Date', 'Status', 'Account', 'Debit', 'Credit', 'Description'], rows)
+    _add_table(
+        doc,
+        ['Entry #', 'Date', 'Status', 'Account', 'Debit', 'Credit', 'Description'],
+        rows,
+    )
 
     return _to_bytes(doc)
