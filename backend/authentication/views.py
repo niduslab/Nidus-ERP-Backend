@@ -175,10 +175,22 @@ class VerifyEmailView(APIView):
         if companies_joined:
             joined_msg = f' You have been added to: {", ".join(companies_joined)}.'
 
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from authentication.serializers import UserProfileSerializer
+
+        refresh = RefreshToken.for_user(user)
+
         return Response(
             {
                 'success': True,
-                'message': f'Email verified successfully! You can now log in.{joined_msg}',
+                'message': f'Email verified successfully!{joined_msg}',
+                'data': {
+                    'user': UserProfileSerializer(user).data,
+                    'tokens': {
+                        'access': str(refresh.access_token),
+                        'refresh': str(refresh),
+                    },
+                },
             },
             status=status.HTTP_200_OK,
         )
@@ -315,10 +327,31 @@ class LoginView(APIView):
             )
 
         if not user.is_email_verified:
+            # ── Auto-recovery: re-send a fresh OTP so the user can complete
+            #    verification, even if they abandoned registration earlier.
+            # This closes the "stuck email" loop where a user couldn't
+            # register, log in, OR re-trigger verification with that email.
+            #
+            # Rate-limiting is already enforced on the login endpoint
+            # (10/min per IP via ScopedRateThrottle), so this can't be abused
+            # to mass-generate OTP emails.
+            from nidus_erp.email_service import send_verification_email
+
+            otp_code = generate_otp()
+            user.email_verification_code = otp_code
+            user.email_verification_code_expires = (
+                timezone.now() + timedelta(minutes=settings.OTP_EXPIRY_MINUTES)
+            )
+            user.save(update_fields=[
+                'email_verification_code',
+                'email_verification_code_expires',
+            ])
+            send_verification_email(user=user, otp_code=otp_code)
+
             return Response(
                 {
                     'success': False,
-                    'message': 'Please verify your email before logging in.',
+                    'message': 'Your email is not verified. We just sent a new verification code.',
                     'requires_verification': True,
                     'email': user.email,
                 },

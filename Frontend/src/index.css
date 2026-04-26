@@ -1,0 +1,55 @@
+/* frontend/src/index.css
+ *
+ * The global stylesheet. Loaded ONCE in main.tsx via:
+ *   import './index.css'
+ *
+ * It does three things:
+ *   1. Imports our design tokens (must come BEFORE Tailwind directives)
+ *   2. Loads Tailwind's base, components, and utility layers
+ *   3. Applies a few opinionated global defaults (smooth scroll, font, etc.)
+ */
+
+/* ── 1. Design tokens (CSS variables) ──
+ * Loaded first so they're available when Tailwind processes its classes. */
+@import './styles/tokens.css';
+
+/* ── 2. Tailwind layers ──
+ * These three lines unlock everything Tailwind generates:
+ *   @tailwind base       → CSS reset + sensible defaults
+ *   @tailwind components → component classes (we don't use these much)
+ *   @tailwind utilities  → all the bg-*, text-*, p-*, m-* etc. classes
+ *
+ * Order matters: base must come first, utilities last. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+/* ── 3. Global defaults ──
+ * Use Tailwind's @layer base so these can be overridden by utility classes
+ * later (utilities have higher specificity than base). */
+@layer base {
+  /* Apply the design-token border color globally */
+  * {
+    @apply border-border;
+  }
+
+  /* Body uses the design-token surface and text colors.
+   * antialiased = crisper text rendering on macOS / iOS. */
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';  /* nicer font features */
+  }
+
+  /* Smooth scrolling for anchor jumps */
+  html {
+    scroll-behavior: smooth;
+  }
+
+  /* Tabular numbers — critical for an accounting app.
+   * Without this, "1,234.56" and "9,876.54" don't align in tables.
+   * "tnum" = tabular numerals = every digit has the same width. */
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}

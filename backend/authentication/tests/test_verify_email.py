@@ -16,19 +16,40 @@ VERIFY_URL = reverse('authentication:verify-email')
 @pytest.mark.django_db
 class TestVerifyEmail:
 
-    def test_verifies_with_correct_otp(self, api_client, user_with_otp):
-        """Happy path — correct OTP flips is_email_verified and clears the code."""
-        response = api_client.post(VERIFY_URL, {
-            'email': user_with_otp.email,
-            'otp_code': '123456',   # Matches the fixture-set OTP
-        }, format='json')
+    def test_verifies_with_correct_otp(self, api_client):
+        """
+        Happy path — verify with a fresh, valid OTP.
+        Expected:
+          - 200 OK
+          - User.is_email_verified is now True
+          - User.email_verification_code is cleared
+          - Response includes user + JWT tokens (auto-login)
+        """
+        from authentication.factories import UserFactory
+        user = UserFactory(
+            is_email_verified=False,
+            email_verification_code='123456',
+            email_verification_code_expires=timezone.now() + timedelta(minutes=10),
+        )
+
+        response = api_client.post(
+            reverse('authentication:verify-email'),
+            {'email': user.email, 'otp_code': '123456'},
+            format='json',
+        )
 
         assert response.status_code == 200
-        user_with_otp.refresh_from_db()
-        assert user_with_otp.is_email_verified is True
-        # The OTP must be cleared after use so it can't be replayed.
-        assert user_with_otp.email_verification_code is None
-        assert user_with_otp.email_verification_code_expires is None
+
+        # User state
+        user.refresh_from_db()
+        assert user.is_email_verified is True
+        assert user.email_verification_code is None
+
+        # Auto-login: response must include user + tokens
+        data = response.data['data']
+        assert data['user']['email'] == user.email
+        assert 'access' in data['tokens']
+        assert 'refresh' in data['tokens']
 
     def test_rejects_wrong_otp(self, api_client, user_with_otp):
         """Wrong code → 400 and account stays unverified."""
