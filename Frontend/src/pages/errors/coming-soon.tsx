@@ -1,10 +1,8 @@
 // frontend/src/pages/errors/coming-soon.tsx
 //
-// Reusable "Coming Soon" placeholder page.
-// Used for sidebar items and routes whose backend / frontend aren't built yet.
-//
-// USAGE:
-//   <ComingSoonPage title="Register" subtitle="Coming in Phase 5d" />
+// Reusable "Coming Soon" placeholder.
+// Now renders INSIDE AppShellLayout — no sidebar/topbar/full-screen layout
+// (the shell provides those).
 
 import { Link } from 'react-router-dom';
 import { Construction } from 'lucide-react';
@@ -17,9 +15,10 @@ interface ComingSoonPageProps {
 
 export function ComingSoonPage({ title, subtitle }: ComingSoonPageProps) {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-6">
+    // Centered within the content area provided by the shell.
+    // py-16 = generous vertical breathing room without taking the full viewport.
+    <div className="flex min-h-[60vh] items-center justify-center">
       <div className="text-center max-w-md">
-        {/* Icon in a tinted square */}
         <div className="mx-auto h-12 w-12 rounded-lg bg-primary/10 flex items-center justify-center">
           <Construction className="h-6 w-6 text-primary" />
         </div>
