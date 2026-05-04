@@ -2,6 +2,10 @@
 node_modules
 .pnp
 .pnp.js
+__pycache__/
+*.pyc
+db.sqlite3
+.env
 
 # Build output
 dist

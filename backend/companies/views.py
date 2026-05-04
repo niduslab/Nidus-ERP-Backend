@@ -4,6 +4,7 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
+from rest_framework.permissions import IsAuthenticated
 
 from rest_framework import status
 from rest_framework.response import Response
@@ -21,9 +22,136 @@ from .serializers import (
     TransferOwnershipSerializer,
 )
 
+import zoneinfo                              # For listing all IANA time zones
+from .models import (
+    CurrencyChoices,
+    IndustryChoices,
+    CompanySizeChoices,
+    InventoryMethodChoices,
+    DateFormatChoices,
+)
+
 User = get_user_model()
 
+class CompanyChoicesView(APIView):
+    """
+    Expose every dropdown option used in company creation/settings forms.
 
+    DESIGN:
+        Returns ALL choice lists in a single response so the frontend
+        can fetch once at app startup and never refetch (these values
+        change only when we deploy new model code).
+
+        Each choice is a `{ value, label }` pair so the frontend
+        renderer is uniform across all dropdowns.
+
+    PERMISSIONS:
+        IsAuthenticated — these are not secret, but they're internal
+        product data, so we require login. No company access check
+        needed (these are GLOBAL choices, not company-scoped).
+
+    CACHING:
+        Frontend caches indefinitely via TanStack Query staleTime: Infinity.
+        If you ever add a new currency or industry, deploying triggers
+        a hard reload on clients which clears the cache.
+
+    NOTE on time_zones:
+        We expose the standard IANA zoneinfo database (~600 entries).
+        These are stable across decades; users want to see their zone
+        in the list. We don't filter to "common" zones because what's
+        "common" depends on the user's region.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # ── Currencies ──
+        # CurrencyChoices.choices is a list of (value, label) tuples.
+        # We unpack each into the frontend-friendly { value, label } shape.
+        currencies = [
+            {'value': value, 'label': label}
+            for value, label in CurrencyChoices.choices
+        ]
+
+        # ── Industries ──
+        industries = [
+            {'value': value, 'label': label}
+            for value, label in IndustryChoices.choices
+        ]
+
+        # ── Company sizes ──
+        company_sizes = [
+            {'value': value, 'label': label}
+            for value, label in CompanySizeChoices.choices
+        ]
+
+        # ── Inventory valuation methods ──
+        inventory_methods = [
+            {'value': value, 'label': label}
+            for value, label in InventoryMethodChoices.choices
+        ]
+
+        # ── Date formats ──
+        date_formats = [
+            {'value': value, 'label': label}
+            for value, label in DateFormatChoices.choices
+        ]
+
+        # ── Fiscal year start months ──
+        # The Company model stores this as IntegerField with choices=[(1,1),(2,2)...].
+        # The labels in models.py are integers — not user-friendly. We
+        # expose proper month names here instead. This is fine because
+        # the validation on the backend just checks 1..12 range.
+        fiscal_year_months = [
+            {'value': 1, 'label': 'January'},
+            {'value': 2, 'label': 'February'},
+            {'value': 3, 'label': 'March'},
+            {'value': 4, 'label': 'April'},
+            {'value': 5, 'label': 'May'},
+            {'value': 6, 'label': 'June'},
+            {'value': 7, 'label': 'July'},
+            {'value': 8, 'label': 'August'},
+            {'value': 9, 'label': 'September'},
+            {'value': 10, 'label': 'October'},
+            {'value': 11, 'label': 'November'},
+            {'value': 12, 'label': 'December'},
+        ]
+
+        # ── Time zones ──
+        # zoneinfo.available_timezones() returns a set of IANA zone names.
+        # We sort alphabetically for stable, predictable order. The result
+        # is ~600 entries on most systems — frontend can use a searchable
+        # combobox to make selection ergonomic.
+        time_zones = [
+            {'value': tz, 'label': tz}
+            for tz in sorted(zoneinfo.available_timezones())
+        ]
+
+        # ── Reporting methods ──
+        # Hardcoded in the model (not a TextChoices class), so we mirror
+        # them here. Order matches the model's choices list.
+        reporting_methods = [
+            {'value': 'ACCRUAL', 'label': 'Accrual'},
+            {'value': 'CASH',    'label': 'Cash'},
+            {'value': 'BOTH',    'label': 'Both'},
+        ]
+
+        return Response(
+            {
+                'success': True,
+                'data': {
+                    'currencies':         currencies,
+                    'industries':         industries,
+                    'company_sizes':      company_sizes,
+                    'inventory_methods':  inventory_methods,
+                    'date_formats':       date_formats,
+                    'fiscal_year_months': fiscal_year_months,
+                    'time_zones':         time_zones,
+                    'reporting_methods':  reporting_methods,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
 
 def get_user_membership(user, company):
     """
