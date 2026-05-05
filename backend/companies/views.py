@@ -33,6 +33,88 @@ from .models import (
 
 User = get_user_model()
 
+
+class ValidateCoaFileView(APIView):
+    """
+    Validate a Custom CoA Excel file WITHOUT creating a company.
+
+    Used by the frontend onboarding wizard to give users immediate
+    feedback before they finalize creation. Same validator runs at
+    create-time (in CompanyCreateSerializer) — exposing it as a
+    standalone endpoint just lets us show errors earlier.
+
+    REQUEST:
+        POST /api/companies/validate-coa-file/
+        Content-Type: multipart/form-data
+        Body: coa_file=<.xlsx file>
+
+    RESPONSE (200, regardless of whether the file is valid):
+        {
+          "success": true,
+          "data": {
+            "valid": bool,
+            "errors": [{sheet, row, column, message}, ...],
+            "error_count": int,
+            "classifications": [...],   # only populated when valid
+            "accounts": [...],          # only populated when valid
+          }
+        }
+
+    NOTE on response status:
+        We return 200 even when `valid: false`. The endpoint itself
+        succeeded — it ran validation and returned a structured result.
+        The frontend distinguishes outcomes via the `valid` flag.
+        Returning 400 for an invalid CoA would conflate "your request
+        was malformed" with "your CoA has errors," which are different
+        situations.
+
+    SECURITY:
+        - IsAuthenticated only; no company context needed since this
+          runs BEFORE a company exists
+        - The file is validated and immediately discarded — never
+          persisted to disk or database
+        - 5 MB cap mirrors the create endpoint's limit
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    # ── Parser configuration ──
+    # MultiPartParser is required to read uploaded files from
+    # request.FILES. Without it, DRF rejects the multipart request
+    # with 400 before the view's post() method runs.
+    # FormParser handles the non-file fields in the same multipart body.
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        file_obj = request.FILES.get('coa_file')
+
+        if not file_obj:
+            return Response(
+                {'success': False, 'message': 'coa_file is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if file_obj.size > 5 * 1024 * 1024:
+            return Response(
+                {
+                    'success': False,
+                    'message': 'File too large. Maximum size is 5 MB.',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Lazy import — keeps the validator from being loaded into
+        # memory until someone actually validates a file.
+        from chartofaccounts.custom_coa_validator import validate_coa_file
+
+        result = validate_coa_file(file_obj)
+
+        return Response(
+            {'success': True, 'data': result},
+            status=status.HTTP_200_OK,
+        )
+
+
 class CompanyChoicesView(APIView):
     """
     Expose every dropdown option used in company creation/settings forms.

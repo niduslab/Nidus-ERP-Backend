@@ -26,6 +26,12 @@ urlpatterns = [
         name='company-choices',
     ),
 
+    path(
+    'validate-coa-file/',
+    views.ValidateCoaFileView.as_view(),
+    name='validate-coa-file',
+    ),
+
     path('', views.CompanyListCreateView.as_view(), name='company-list-create'),
     path('<uuid:company_id>/', views.CompanyDetailView.as_view(), name='company-detail'),
     path('<uuid:company_id>/transfer-ownership/', views.TransferOwnershipView.as_view(), name='transfer-ownership'),
